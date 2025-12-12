@@ -1,0 +1,1 @@
+ALTER TABLE "monitored_links" ADD COLUMN "environment" text DEFAULT 'dev' NOT NULL;
