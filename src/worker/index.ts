@@ -7,6 +7,7 @@ import { checkUrl } from '../lib/checker';
 import { convexClient } from '../lib/convex';
 import { createWorkerLogger, logger } from '../lib/logger';
 import * as Sentry from '@sentry/bun';
+import { api } from '../types/convexApiTypes';
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
@@ -56,26 +57,29 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
     const sharedSecret = process.env.MONITORING_SHARED_SECRET;
     if (sharedSecret && process.env.CONVEX_URL) {
       // Make HTTP call to Convex mutation
-      // We'll set this up once the Convex function is created
-      log.debug('Convex health check would be recorded here');
-
-      // TODO: Uncomment when Convex function is ready
-      // await convexClient.mutation(api.linkMonitoring.recordHealthCheck, {
-      //   sharedSecret,
-      //   urlId: convexUrlId,
-      //   userId: convexUserId,
-      //   shortUrl,
-      //   longUrl,
-      //   statusCode: result.statusCode,
-      //   latencyMs: result.latencyMs,
-      //   isHealthy: result.isHealthy,
-      //   healthStatus: result.healthStatus,
-      //   errorMessage: result.errorMessage,
-      //   checkedAt: now.getTime(),
-      // });
+      log.debug(
+        '[Link Monitoring] | Convex health check would be recorded here'
+      );
+      const response_data = await convexClient.mutation(
+        api.linkHealth.recordHealthCheck,
+        {
+          sharedSecret,
+          urlId: convexUrlId,
+          userId: convexUserId,
+          shortUrl,
+          longUrl,
+          statusCode: result.statusCode,
+          latencyMs: result.latencyMs,
+          isHealthy: result.isHealthy,
+          healthStatus: result.healthStatus,
+          errorMessage: result.errorMessage,
+          checkedAt: now.getTime(),
+        }
+      );
+      if (response_data) {
+        console.log('Convex health check recorded', response_data);
+      }
     }
-
-    log.debug('Convex health check recorded');
   } catch (error) {
     log.error(
       { error: error instanceof Error ? error.message : 'Unknown' },

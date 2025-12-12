@@ -9,6 +9,3 @@ if (!CONVEX_URL) {
 }
 
 export const convexClient = new ConvexHttpClient(CONVEX_URL || '');
-
-// API types will be imported from the main ndle app once we set up the shared types
-// For now, we'll make direct HTTP calls with the mutation path
