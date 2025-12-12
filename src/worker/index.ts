@@ -100,19 +100,34 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
   );
 }
 
-// Create and start the worker
-export const worker = createWorker(processJob);
+// Worker instance (created on startWorker)
+let worker: ReturnType<typeof createWorker> | null = null;
 
-logger.info(
-  {
-    concurrency: process.env.WORKER_CONCURRENCY || 10,
-  },
-  'Worker started'
-);
+// Start worker - call this explicitly instead of auto-starting on import
+export function startWorker(): ReturnType<typeof createWorker> {
+  if (worker) {
+    logger.warn('Worker already started');
+    return worker;
+  }
+
+  worker = createWorker(processJob);
+  logger.info(
+    {
+      concurrency: process.env.WORKER_CONCURRENCY || 10,
+    },
+    'Worker started'
+  );
+  return worker;
+}
 
 // Graceful shutdown
 export async function shutdownWorker(): Promise<void> {
+  if (!worker) {
+    logger.warn('Worker not started, nothing to shut down');
+    return;
+  }
   logger.info('Shutting down worker...');
   await worker.close();
+  worker = null;
   logger.info('Worker shut down');
 }

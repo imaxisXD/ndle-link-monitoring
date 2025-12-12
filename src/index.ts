@@ -5,14 +5,11 @@ import { db } from './db';
 import { monitoredLinks, NewMonitoredLink } from './db/schema';
 import { createQueue } from './queue/factory';
 import { logger, createRequestLogger } from './lib/logger';
-import { startScheduler, stopScheduler } from './scheduler';
-import { worker, shutdownWorker } from './worker';
 import { DEFAULT_INTERVAL_MS } from './lib/constants';
 
 const PORT = parseInt(process.env.PORT || '3001');
 
 // Determine which components to run based on environment
-const RUN_API = process.env.RUN_API !== 'false';
 const RUN_SCHEDULER = process.env.RUN_SCHEDULER !== 'false';
 const RUN_WORKER = process.env.RUN_WORKER !== 'false';
 
@@ -220,42 +217,42 @@ const app = new Elysia()
           params: t.Object({ id: t.String() }),
         }
       )
-  );
+  )
+  .listen(PORT);
 
-// Main startup
-async function main() {
-  logger.info(
-    {
-      api: RUN_API,
-      scheduler: RUN_SCHEDULER,
-      worker: RUN_WORKER,
-    },
-    'Starting Link Monitoring Service'
-  );
+logger.info({ port: PORT }, '🦊 Elysia API server started');
 
-  // Start API server
-  if (RUN_API) {
-    app.listen(PORT);
-    logger.info({ port: PORT }, '🦊 API server started');
-  }
-
-  // Start scheduler
-  if (RUN_SCHEDULER) {
+// Conditionally start scheduler (uses dynamic import to avoid side effects)
+if (RUN_SCHEDULER) {
+  import('./scheduler').then(({ startScheduler }) => {
     startScheduler();
-  }
+  });
+}
 
-  // Worker auto-starts when imported
-  if (RUN_WORKER) {
-    logger.info('Worker is listening for jobs');
-  }
+// Conditionally start worker (uses dynamic import to avoid auto-start on import)
+let workerModule: typeof import('./worker') | null = null;
+
+if (RUN_WORKER) {
+  import('./worker').then(mod => {
+    workerModule = mod;
+    mod.startWorker(); // Explicitly start the worker
+  });
 }
 
 // Graceful shutdown
 async function shutdown() {
   logger.info('Received shutdown signal');
 
-  stopScheduler();
-  await shutdownWorker();
+  // Stop scheduler
+  if (RUN_SCHEDULER) {
+    const { stopScheduler } = await import('./scheduler');
+    stopScheduler();
+  }
+
+  // Stop worker
+  if (workerModule) {
+    await workerModule.shutdownWorker();
+  }
 
   logger.info('Graceful shutdown complete');
   process.exit(0);
@@ -263,10 +260,3 @@ async function shutdown() {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-
-main().catch(err => {
-  logger.fatal({ error: err.message }, 'Failed to start service');
-  process.exit(1);
-});
-
-export default app;
