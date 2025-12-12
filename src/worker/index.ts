@@ -4,7 +4,7 @@ import { db } from '../db';
 import { monitoredLinks } from '../db/schema';
 import { createWorker, HealthCheckJob } from '../queue/factory';
 import { checkUrl } from '../lib/checker';
-import { convexClient } from '../lib/convex';
+import { getConvexClient } from '../lib/convex';
 import { createWorkerLogger, logger } from '../lib/logger';
 import * as Sentry from '@sentry/bun';
 import { api } from '../types/convexApiTypes';
@@ -15,7 +15,8 @@ Sentry.init({
 });
 
 async function processJob(job: Job<HealthCheckJob>): Promise<void> {
-  const { linkId, convexUrlId, convexUserId, longUrl, shortUrl } = job.data;
+  const { linkId, convexUrlId, convexUserId, longUrl, shortUrl, environment } =
+    job.data;
   const log = createWorkerLogger(job.id!, linkId);
 
   log.info({ longUrl: longUrl.substring(0, 100) }, 'Processing health check');
@@ -55,10 +56,13 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
   // Step 3: Write result to Convex (permanent history)
   try {
     const sharedSecret = process.env.MONITORING_SHARED_SECRET;
-    if (sharedSecret && process.env.CONVEX_URL) {
-      // Make HTTP call to Convex mutation
+    const convexClient = getConvexClient(environment);
+
+    if (sharedSecret) {
+      // Make HTTP call to Convex mutation for the correct environment
       log.debug(
-        '[Link Monitoring] | Convex health check would be recorded here'
+        { environment },
+        '[Link Monitoring] | Recording health check to Convex'
       );
       const response_data = await convexClient.mutation(
         api.linkHealth.recordHealthCheck,

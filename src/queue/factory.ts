@@ -16,6 +16,7 @@ export interface HealthCheckJob {
   convexUserId: string;
   longUrl: string;
   shortUrl: string;
+  environment: 'dev' | 'prod'; // Which Convex instance to write results to
 }
 
 export const createQueue = () => {

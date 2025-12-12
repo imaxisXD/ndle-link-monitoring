@@ -73,13 +73,17 @@ const app = new Elysia()
       .post(
         '/register',
         async ({ body, log }) => {
-          log.info({ shortUrl: body.shortUrl }, 'Registering new link');
+          log.info(
+            { shortUrl: body.shortUrl, environment: body.environment },
+            'Registering new link'
+          );
 
           const newLink: NewMonitoredLink = {
             convexUrlId: body.convexUrlId,
             convexUserId: body.convexUserId,
             longUrl: body.longUrl,
             shortUrl: body.shortUrl,
+            environment: body.environment || 'prod',
             intervalMs: body.intervalMs || DEFAULT_INTERVAL_MS,
             nextCheckAt: new Date(), // Check immediately
             isActive: true,
@@ -105,6 +109,9 @@ const app = new Elysia()
             convexUserId: t.String(),
             longUrl: t.String(),
             shortUrl: t.String(),
+            environment: t.Optional(
+              t.Union([t.Literal('dev'), t.Literal('prod')])
+            ),
             intervalMs: t.Optional(t.Number()),
           }),
         }
@@ -114,13 +121,17 @@ const app = new Elysia()
       .post(
         '/batch',
         async ({ body, log }) => {
-          log.info({ count: body.links.length }, 'Batch registering links');
+          log.info(
+            { count: body.links.length, environment: body.environment },
+            'Batch registering links'
+          );
 
           const links: NewMonitoredLink[] = body.links.map(link => ({
             convexUrlId: link.convexUrlId,
             convexUserId: link.convexUserId,
             longUrl: link.longUrl,
             shortUrl: link.shortUrl,
+            environment: body.environment || 'prod',
             intervalMs: link.intervalMs || DEFAULT_INTERVAL_MS,
             nextCheckAt: new Date(),
             isActive: true,
@@ -137,6 +148,9 @@ const app = new Elysia()
         },
         {
           body: t.Object({
+            environment: t.Optional(
+              t.Union([t.Literal('dev'), t.Literal('prod')])
+            ),
             links: t.Array(
               t.Object({
                 convexUrlId: t.String(),
@@ -172,6 +186,7 @@ const app = new Elysia()
               convexUserId: link.convexUserId,
               longUrl: link.longUrl,
               shortUrl: link.shortUrl,
+              environment: link.environment as 'dev' | 'prod',
             },
             {
               priority: 1, // High priority

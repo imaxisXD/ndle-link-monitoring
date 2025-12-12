@@ -62,6 +62,7 @@ export async function schedulerTick(): Promise<number> {
         convexUserId: link.convexUserId,
         longUrl: link.longUrl,
         shortUrl: link.shortUrl,
+        environment: link.environment as 'dev' | 'prod',
       };
 
       // Add to queue
