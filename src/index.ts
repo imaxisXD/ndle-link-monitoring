@@ -23,14 +23,34 @@ const app = new Elysia()
       log: createRequestLogger(requestId),
     };
   })
-
+  .get('/', () => {
+    (logger.info({
+      status: 'ok',
+      service: 'link-monitoring',
+      timestamp: new Date().toISOString(),
+    }),
+      {
+        status: 'ok',
+        service: 'link-monitoring',
+        timestamp: new Date().toISOString(),
+      });
+  })
   // Health check (public)
-  .get('/health', () => ({
-    status: 'ok',
-    service: 'link-monitoring',
-    timestamp: new Date().toISOString(),
-  }))
-
+  .get(
+    '/health',
+    () => (
+      logger.info({
+        status: 'ok',
+        service: 'link-monitoring',
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        status: 'ok',
+        service: 'link-monitoring',
+        timestamp: new Date().toISOString(),
+      }
+    )
+  )
   // Auth guard for all /monitors routes
   .group('/monitors', app =>
     app
