@@ -163,6 +163,7 @@ export async function checkUrl(
     if (healthStatus === 'down') {
       requestLogger.error(
         {
+          component: 'url-checker',
           statusCode: response.status,
           latencyMs,
           healthStatus,
@@ -196,6 +197,7 @@ export async function checkUrl(
     } else if (healthStatus === 'degraded') {
       requestLogger.warn(
         {
+          component: 'url-checker',
           statusCode: response.status,
           latencyMs,
           healthStatus,
@@ -218,9 +220,13 @@ export async function checkUrl(
     } else {
       requestLogger.info(
         {
+          component: 'url-checker',
           statusCode: response.status,
           latencyMs,
           healthStatus,
+          url: longUrl,
+          responseTime: `${latencyMs}ms`,
+          serverStatus: 'Responding normally',
         },
         'Health check completed - URL is UP'
       );
@@ -241,11 +247,28 @@ export async function checkUrl(
 
     requestLogger.warn(
       {
+        component: 'url-checker',
         latencyMs,
         error: errorMessage,
         isTimeout,
+        url: longUrl,
+        possibleCauses: isTimeout
+          ? [
+              'Server took too long to respond',
+              'Network timeout - DNS or connection issues',
+              'Server may be overloaded or unresponsive',
+            ]
+          : [
+              'DNS resolution failure',
+              'Connection refused - server may be down',
+              'SSL/TLS certificate error',
+              'Network unreachable',
+            ],
+        recommendation: isTimeout
+          ? 'Check if the server is responding to other requests; consider increasing timeout threshold'
+          : 'Verify server is running and accessible; check DNS and network connectivity',
       },
-      'Health check failed'
+      `Health check failed - ${isTimeout ? 'Request timed out' : errorMessage}`
     );
 
     return {
