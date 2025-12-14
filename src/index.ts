@@ -126,13 +126,21 @@ const app = new Elysia()
             'Batch registering links'
           );
 
+          if (body.links.length === 0) {
+            log.warn('No links provided');
+            return { success: true, message: 'No links provided' };
+          }
+
           const links: NewMonitoredLink[] = body.links.map(link => ({
             convexUrlId: link.convexUrlId,
             convexUserId: link.convexUserId,
             longUrl: link.longUrl,
             shortUrl: link.shortUrl,
             environment: body.environment || 'prod',
-            intervalMs: link.intervalMs || DEFAULT_INTERVAL_MS,
+            intervalMs:
+              typeof link.intervalMs === 'string'
+                ? parseInt(link.intervalMs)
+                : link.intervalMs || DEFAULT_INTERVAL_MS,
             nextCheckAt: new Date(),
             isActive: true,
           }));
