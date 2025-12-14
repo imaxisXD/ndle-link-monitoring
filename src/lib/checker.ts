@@ -159,14 +159,72 @@ export async function checkUrl(
         ? 'degraded'
         : 'up';
 
-    requestLogger.info(
-      {
-        statusCode: response.status,
-        latencyMs,
-        healthStatus,
-      },
-      'Health check completed'
-    );
+    // Log based on health status with appropriate severity and details
+    if (healthStatus === 'down') {
+      requestLogger.error(
+        {
+          statusCode: response.status,
+          latencyMs,
+          healthStatus,
+          url: longUrl,
+          possibleCauses: [
+            response.status >= 500
+              ? 'Server error - the target server may be experiencing issues or overloaded'
+              : null,
+            response.status === 404
+              ? 'Not Found - the URL path may have changed or been removed'
+              : null,
+            response.status === 403
+              ? 'Forbidden - request may be blocked by WAF, firewall, or bot protection'
+              : null,
+            response.status === 401
+              ? 'Unauthorized - the resource requires authentication'
+              : null,
+            response.status === 400
+              ? 'Bad Request - malformed URL or request parameters'
+              : null,
+          ].filter(Boolean),
+          recommendation:
+            response.status >= 500
+              ? 'Check if the target server is operational and responding to other requests'
+              : response.status === 403
+                ? 'The site may have bot protection enabled; consider whitelisting or alternative monitoring'
+                : 'Verify the URL is correct and accessible from a browser',
+        },
+        `URL is DOWN - HTTP ${response.status} response received`
+      );
+    } else if (healthStatus === 'degraded') {
+      requestLogger.warn(
+        {
+          statusCode: response.status,
+          latencyMs,
+          healthStatus,
+          url: longUrl,
+          threshold: DEGRADED_THRESHOLD_MS,
+          exceededBy: latencyMs - DEGRADED_THRESHOLD_MS,
+          possibleCauses: [
+            'High server load or resource contention on target server',
+            'Network latency or routing issues between monitoring service and target',
+            'Slow DNS resolution',
+            'SSL/TLS handshake delays',
+            'Large response payload or slow backend processing',
+            'Geographic distance to server causing latency',
+          ],
+          recommendation:
+            'Monitor for patterns - occasional spikes may be normal, persistent degradation indicates performance issues',
+        },
+        `URL is DEGRADED - Response took ${latencyMs}ms (threshold: ${DEGRADED_THRESHOLD_MS}ms)`
+      );
+    } else {
+      requestLogger.info(
+        {
+          statusCode: response.status,
+          latencyMs,
+          healthStatus,
+        },
+        'Health check completed - URL is UP'
+      );
+    }
 
     return {
       statusCode: response.status,
