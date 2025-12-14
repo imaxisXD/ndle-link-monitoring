@@ -46,6 +46,7 @@ function getBrowserHeaders(userAgent: string): Record<string, string> {
     Pragma: 'no-cache',
     Connection: 'keep-alive',
     'Upgrade-Insecure-Requests': '1',
+    Referer: 'https://www.google.com/',
   };
 
   // Add Sec-CH-UA headers for Chromium-based browsers (required by modern sites)
@@ -151,8 +152,12 @@ export async function checkUrl(
     clearTimeout(timeoutId);
     const latencyMs = Date.now() - start;
 
-    // Consider 403 from GET as actually blocked/down
-    const isHealthy = response.status >= 200 && response.status < 400;
+    // Check if bot-protected (403 after GET retry means site is up but blocking us)
+    const isBotProtected = response.status === 403;
+    // Site is healthy if 2xx/3xx OR if it's bot-protected (site is up, just blocking monitoring)
+    const isHealthy =
+      (response.status >= 200 && response.status < 400) || isBotProtected;
+    // Bot-protected sites are treated as 'up' since the site is actually responding
     const healthStatus: 'up' | 'down' | 'degraded' = !isHealthy
       ? 'down'
       : latencyMs > DEGRADED_THRESHOLD_MS
@@ -160,7 +165,23 @@ export async function checkUrl(
         : 'up';
 
     // Log based on health status with appropriate severity and details
-    if (healthStatus === 'down') {
+    if (isBotProtected) {
+      // Special logging for bot-protected sites (status is 'up' but we log the protection info)
+      requestLogger.info(
+        {
+          component: 'url-checker',
+          statusCode: response.status,
+          latencyMs,
+          healthStatus,
+          url: longUrl,
+          isBotProtected: true,
+          note: 'Site is UP but has bot protection enabled - monitoring requests are blocked',
+          recommendation:
+            'The site is functioning correctly but blocks automated monitoring; consider this as UP',
+        },
+        'URL is UP (Bot Protected) - Site has bot protection enabled'
+      );
+    } else if (healthStatus === 'down') {
       requestLogger.error(
         {
           component: 'url-checker',
@@ -175,9 +196,6 @@ export async function checkUrl(
             response.status === 404
               ? 'Not Found - the URL path may have changed or been removed'
               : null,
-            response.status === 403
-              ? 'Forbidden - request may be blocked by WAF, firewall, or bot protection'
-              : null,
             response.status === 401
               ? 'Unauthorized - the resource requires authentication'
               : null,
@@ -188,9 +206,7 @@ export async function checkUrl(
           recommendation:
             response.status >= 500
               ? 'Check if the target server is operational and responding to other requests'
-              : response.status === 403
-                ? 'The site may have bot protection enabled; consider whitelisting or alternative monitoring'
-                : 'Verify the URL is correct and accessible from a browser',
+              : 'Verify the URL is correct and accessible from a browser',
         },
         `URL is DOWN - HTTP ${response.status} response received`
       );
