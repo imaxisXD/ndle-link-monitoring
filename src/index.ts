@@ -1,11 +1,32 @@
 import { Elysia, t } from 'elysia';
 import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
+import * as Sentry from '@sentry/bun';
 import { db } from './db';
 import { monitoredLinks, NewMonitoredLink } from './db/schema';
-import { createQueue } from './queue/factory';
+import { getQueue, closeAllConnections } from './queue/factory';
 import { logger, createRequestLogger } from './lib/logger';
 import { DEFAULT_INTERVAL_MS } from './lib/constants';
+
+// Initialize Sentry first
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  tracesSampleRate: 0.1,
+});
+
+// Global error handlers - capture ALL unhandled errors
+process.on('uncaughtException', error => {
+  logger.error(
+    { error: error.message, stack: error.stack },
+    'Uncaught Exception'
+  );
+  Sentry.captureException(error);
+});
+
+process.on('unhandledRejection', reason => {
+  logger.error({ reason }, 'Unhandled Rejection');
+  Sentry.captureException(reason);
+});
 
 const PORT = parseInt(process.env.PORT || '3001');
 
@@ -185,7 +206,7 @@ const app = new Elysia()
             return { error: 'Link not found' };
           }
 
-          const queue = createQueue();
+          const queue = getQueue();
           await queue.add(
             `force-${link.id}`,
             {
@@ -200,7 +221,7 @@ const app = new Elysia()
               priority: 1, // High priority
             }
           );
-          await queue.close();
+          // Note: Don't call queue.close() - it's a singleton
 
           log.info({ linkId: link.id }, 'Force check queued');
           return { success: true, message: 'Check queued' };
@@ -296,6 +317,9 @@ async function shutdown() {
   if (workerModule) {
     await workerModule.shutdownWorker();
   }
+
+  // Close all Redis connections
+  await closeAllConnections();
 
   logger.info('Graceful shutdown complete');
   process.exit(0);

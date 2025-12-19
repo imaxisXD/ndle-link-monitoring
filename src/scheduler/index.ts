@@ -1,7 +1,7 @@
 import { and, lte, eq, isNull, or } from 'drizzle-orm';
 import { db } from '../db';
 import { monitoredLinks } from '../db/schema';
-import { createQueue, HealthCheckJob } from '../queue/factory';
+import { getQueue, HealthCheckJob } from '../queue/factory';
 import { schedulerLogger as logger } from '../lib/logger';
 import {
   SCHEDULER_INTERVAL_MS,
@@ -52,7 +52,7 @@ export async function schedulerTick(): Promise<number> {
 
     logger.info({ count: dueLinks.length }, 'Found due links');
 
-    const queue = createQueue();
+    const queue = getQueue();
     let queued = 0;
 
     for (const link of dueLinks) {
@@ -86,7 +86,7 @@ export async function schedulerTick(): Promise<number> {
       queued++;
     }
 
-    await queue.close();
+    // Note: Don't call queue.close() - it's a singleton
 
     const tickDuration = Date.now() - tickStart;
     logger.info(
