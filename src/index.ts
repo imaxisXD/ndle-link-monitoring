@@ -80,8 +80,11 @@ const app = new Elysia()
         const auth = request.headers.get('authorization');
 
         if (!secret) {
-          log.warn('MONITORING_API_SECRET not set - allowing request (DEV)');
-          return; // Allow in dev
+          log.error(
+            'MONITORING_API_SECRET not set - rejecting request (security)'
+          );
+          set.status = 500;
+          return { error: 'Service not configured' };
         }
 
         if (auth !== `Bearer ${secret}`) {
