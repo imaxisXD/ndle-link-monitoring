@@ -6,6 +6,7 @@ import {
   boolean,
   timestamp,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 export const monitoredLinks = pgTable(
@@ -56,8 +57,8 @@ export const monitoredLinks = pgTable(
   table => [
     // Index for scheduler query: WHERE next_check_at <= NOW() AND is_active = true
     index('idx_next_check_active').on(table.nextCheckAt, table.isActive),
-    // Index for looking up by Convex URL ID
-    index('idx_convex_url_id').on(table.convexUrlId),
+    // UNIQUE index for looking up by Convex URL ID (enables onConflictDoNothing)
+    uniqueIndex('idx_convex_url_id').on(table.convexUrlId),
     // Index for user queries
     index('idx_convex_user_id').on(table.convexUserId),
   ]
