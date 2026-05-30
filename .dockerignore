@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+node_modules
+coverage
+build
+*.log
+*.zip
+*.tar.gz
+*.tgz
