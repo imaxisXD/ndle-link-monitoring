@@ -7,6 +7,7 @@ import { monitoredLinks, NewMonitoredLink } from './db/schema';
 import { getQueue, closeAllConnections } from './queue/factory';
 import { logger, createRequestLogger } from './lib/logger';
 import { DEFAULT_INTERVAL_MS } from './lib/constants';
+import { assertSafeHttpUrl } from './lib/url-safety';
 
 // Initialize Sentry first
 Sentry.init({
@@ -45,16 +46,16 @@ const app = new Elysia()
     };
   })
   .get('/', () => {
-    (logger.info({
+    logger.info({
       status: 'ok',
       service: 'link-monitoring',
       timestamp: new Date().toISOString(),
-    }),
-      {
-        status: 'ok',
-        service: 'link-monitoring',
-        timestamp: new Date().toISOString(),
-      });
+    });
+    return {
+      status: 'ok',
+      service: 'link-monitoring',
+      timestamp: new Date().toISOString(),
+    };
   })
   // Health check (public)
   .get(
@@ -96,16 +97,27 @@ const app = new Elysia()
       // POST /monitors/register - Auto-called by Convex on URL creation
       .post(
         '/register',
-        async ({ body, log }) => {
+        async ({ body, log, set }) => {
           log.info(
             { shortUrl: body.shortUrl, environment: body.environment },
             'Registering new link'
           );
 
+          let normalizedLongUrl: string;
+          try {
+            normalizedLongUrl = (await assertSafeHttpUrl(body.longUrl)).toString();
+          } catch (error) {
+            set.status = 400;
+            return {
+              success: false,
+              error: error instanceof Error ? error.message : 'Invalid URL',
+            };
+          }
+
           const newLink: NewMonitoredLink = {
             convexUrlId: body.convexUrlId,
             convexUserId: body.convexUserId,
-            longUrl: body.longUrl,
+            longUrl: normalizedLongUrl,
             shortUrl: body.shortUrl,
             environment: body.environment || 'prod',
             intervalMs: body.intervalMs || DEFAULT_INTERVAL_MS,
@@ -144,7 +156,7 @@ const app = new Elysia()
       // POST /monitors/batch - Bulk import existing links
       .post(
         '/batch',
-        async ({ body, log }) => {
+        async ({ body, log, set }) => {
           log.info(
             { count: body.links.length, environment: body.environment },
             'Batch registering links'
@@ -155,19 +167,31 @@ const app = new Elysia()
             return { success: true, message: 'No links provided' };
           }
 
-          const links: NewMonitoredLink[] = body.links.map(link => ({
-            convexUrlId: link.convexUrlId,
-            convexUserId: link.convexUserId,
-            longUrl: link.longUrl,
-            shortUrl: link.shortUrl,
-            environment: body.environment || 'prod',
-            intervalMs:
-              typeof link.intervalMs === 'string'
-                ? parseInt(link.intervalMs)
-                : link.intervalMs || DEFAULT_INTERVAL_MS,
-            nextCheckAt: new Date(),
-            isActive: true,
-          }));
+          const links: NewMonitoredLink[] = [];
+          for (const link of body.links) {
+            try {
+              links.push({
+                convexUrlId: link.convexUrlId,
+                convexUserId: link.convexUserId,
+                longUrl: (await assertSafeHttpUrl(link.longUrl)).toString(),
+                shortUrl: link.shortUrl,
+                environment: body.environment || 'prod',
+                intervalMs:
+                  typeof link.intervalMs === 'string'
+                    ? parseInt(link.intervalMs)
+                    : link.intervalMs || DEFAULT_INTERVAL_MS,
+                nextCheckAt: new Date(),
+                isActive: true,
+              });
+            } catch (error) {
+              set.status = 400;
+              return {
+                success: false,
+                error: error instanceof Error ? error.message : 'Invalid URL',
+                convexUrlId: link.convexUrlId,
+              };
+            }
+          }
 
           const result = await db
             .insert(monitoredLinks)

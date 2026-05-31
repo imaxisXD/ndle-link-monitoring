@@ -1,5 +1,6 @@
 import { logger } from './logger';
 import { CHECK_TIMEOUT_MS, DEGRADED_THRESHOLD_MS } from './constants';
+import { redactUrlForLogs, safeFetch } from './url-safety';
 
 export interface CheckResult {
   statusCode: number;
@@ -103,9 +104,8 @@ async function makeRequest(
     'Making request'
   );
 
-  return fetch(url, {
+  return safeFetch(url, {
     method,
-    redirect: 'follow',
     signal,
     headers,
   });
@@ -116,6 +116,7 @@ export async function checkUrl(
   requestLogger: typeof logger
 ): Promise<CheckResult> {
   const start = Date.now();
+  const redactedUrl = redactUrlForLogs(longUrl);
 
   try {
     const controller = new AbortController();
@@ -173,7 +174,7 @@ export async function checkUrl(
           statusCode: response.status,
           latencyMs,
           healthStatus,
-          url: longUrl,
+          url: redactedUrl,
           isBotProtected: true,
           note: 'Site is UP but has bot protection enabled - monitoring requests are blocked',
           recommendation:
@@ -188,7 +189,7 @@ export async function checkUrl(
           statusCode: response.status,
           latencyMs,
           healthStatus,
-          url: longUrl,
+          url: redactedUrl,
           possibleCauses: [
             response.status >= 500
               ? 'Server error - the target server may be experiencing issues or overloaded'
@@ -217,7 +218,7 @@ export async function checkUrl(
           statusCode: response.status,
           latencyMs,
           healthStatus,
-          url: longUrl,
+          url: redactedUrl,
           threshold: DEGRADED_THRESHOLD_MS,
           exceededBy: latencyMs - DEGRADED_THRESHOLD_MS,
           possibleCauses: [
@@ -240,7 +241,7 @@ export async function checkUrl(
           statusCode: response.status,
           latencyMs,
           healthStatus,
-          url: longUrl,
+          url: redactedUrl,
           responseTime: `${latencyMs}ms`,
           serverStatus: 'Responding normally',
         },
@@ -267,7 +268,7 @@ export async function checkUrl(
         latencyMs,
         error: errorMessage,
         isTimeout,
-        url: longUrl,
+        url: redactedUrl,
         possibleCauses: isTimeout
           ? [
               'Server took too long to respond',

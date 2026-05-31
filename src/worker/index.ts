@@ -8,6 +8,7 @@ import { getConvexClient } from '../lib/convex';
 import { createWorkerLogger, logger } from '../lib/logger';
 import * as Sentry from '@sentry/bun';
 import { api } from '../types/convexApiTypes';
+import { redactUrlForLogs } from '../lib/url-safety';
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
@@ -18,8 +19,9 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
   const { linkId, convexUrlId, convexUserId, longUrl, shortUrl, environment } =
     job.data;
   const log = createWorkerLogger(job.id!, linkId);
+  const redactedUrl = redactUrlForLogs(longUrl);
 
-  log.info({ longUrl: longUrl.substring(0, 100) }, 'Processing health check');
+  log.info({ url: redactedUrl }, 'Processing health check');
 
   // Step 1: Perform the health check
   const result = await checkUrl(longUrl, log);
@@ -58,31 +60,33 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
     const sharedSecret = process.env.MONITORING_SHARED_SECRET;
     const convexClient = getConvexClient(environment);
 
-    if (sharedSecret) {
-      // Make HTTP call to Convex mutation for the correct environment
-      log.debug(
-        { environment },
-        '[Link Monitoring] | Recording health check to Convex'
-      );
-      const response_data = await convexClient.mutation(
-        api.linkHealth.recordHealthCheck,
-        {
-          sharedSecret,
-          urlId: convexUrlId,
-          userId: convexUserId,
-          shortUrl,
-          longUrl,
-          statusCode: result.statusCode,
-          latencyMs: result.latencyMs,
-          isHealthy: result.isHealthy,
-          healthStatus: result.healthStatus,
-          errorMessage: result.errorMessage,
-          checkedAt: now.getTime(),
-        }
-      );
-      if (response_data) {
-        console.log('Convex health check recorded', response_data);
+    if (!sharedSecret) {
+      throw new Error('MONITORING_SHARED_SECRET is not configured');
+    }
+
+    // Make HTTP call to Convex mutation for the correct environment
+    log.debug(
+      { environment },
+      '[Link Monitoring] | Recording health check to Convex'
+    );
+    const response_data = await convexClient.mutation(
+      api.linkHealth.recordHealthCheck,
+      {
+        sharedSecret,
+        urlId: convexUrlId,
+        userId: convexUserId,
+        shortUrl,
+        longUrl,
+        statusCode: result.statusCode,
+        latencyMs: result.latencyMs,
+        isHealthy: result.isHealthy,
+        healthStatus: result.healthStatus,
+        errorMessage: result.errorMessage,
+        checkedAt: now.getTime(),
       }
+    );
+    if (response_data) {
+      log.debug({ response_data }, 'Convex health check recorded');
     }
   } catch (error) {
     log.error(
@@ -92,7 +96,7 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
     Sentry.captureException(error, {
       extra: { jobId: job.id, linkId, convexUrlId },
     });
-    // Don't throw - job is still considered successful if we got the check result
+    throw error;
   }
 
   log.info(
