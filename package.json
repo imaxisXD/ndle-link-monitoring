@@ -10,21 +10,30 @@
     "start": "bun run db:migrate && bun run src/index.ts"
   },
   "dependencies": {
-    "@sentry/bun": "^10.30.0",
+    "@sentry/bun": "^10.59.0",
     "bullmq": "^5.65.1",
-    "convex": "^1.31.0",
-    "drizzle-orm": "^0.45.0",
-    "elysia": "latest",
+    "convex": "^1.41.0",
+    "drizzle-orm": "^0.45.2",
+    "elysia": "^1.4.29",
+    "file-type": "22.0.1",
     "ioredis": "^5.8.2",
     "pino": "^10.1.0",
     "pino-pretty": "^13.1.3"
   },
   "devDependencies": {
-    "@typescript-eslint/parser": "^8.49.0",
+    "@typescript-eslint/parser": "^8.61.1",
     "bun-types": "latest",
-    "drizzle-kit": "^0.31.8",
-    "eslint": "^9.39.1",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^10.5.0",
     "prettier": "^3.7.4"
+  },
+  "overrides": {
+    "esbuild": "0.28.1",
+    "file-type": "22.0.1",
+    "flatted": "3.4.2",
+    "picomatch": "4.0.4",
+    "uuid": "11.1.1",
+    "ws": "8.21.0"
   },
   "module": "src/index.js"
 }
