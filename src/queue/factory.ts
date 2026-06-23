@@ -1,4 +1,4 @@
-import { Queue, Worker, Job, QueueEvents } from 'bullmq';
+import { Queue, Worker, Job, QueueEvents, type ConnectionOptions } from 'bullmq';
 import IORedis from 'ioredis';
 import * as Sentry from '@sentry/bun';
 import { connectionUrl, redisConfig } from './config';
@@ -19,6 +19,8 @@ export interface HealthCheckJob {
   shortUrl: string;
   environment: 'dev' | 'prod'; // Which Convex instance to write results to
 }
+type HealthCheckQueue = Queue<HealthCheckJob, void, string>;
+type HealthCheckQueueJob = Job<HealthCheckJob, void, string>;
 
 // Singleton Redis connections to prevent connection leaks
 let sharedQueueConnection: IORedis | null = null;
@@ -26,7 +28,11 @@ let sharedWorkerConnection: IORedis | null = null;
 let sharedEventsConnection: IORedis | null = null;
 
 // Singleton queue instance
-let sharedQueue: Queue<HealthCheckJob> | null = null;
+let sharedQueue: HealthCheckQueue | null = null;
+
+function asBullConnection(connection: IORedis): ConnectionOptions {
+  return connection as unknown as ConnectionOptions;
+}
 
 function getQueueConnection(): IORedis {
   if (!sharedQueueConnection) {
@@ -86,10 +92,10 @@ function getEventsConnection(): IORedis {
 }
 
 // Returns a singleton queue instance - DO NOT call .close() on this
-export const getQueue = (): Queue<HealthCheckJob> => {
+export const getQueue = (): HealthCheckQueue => {
   if (!sharedQueue) {
-    sharedQueue = new Queue<HealthCheckJob>(QUEUE_NAME, {
-      connection: getQueueConnection(),
+    sharedQueue = new Queue<HealthCheckJob, void, string>(QUEUE_NAME, {
+      connection: asBullConnection(getQueueConnection()),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 1000 },
@@ -103,16 +109,16 @@ export const getQueue = (): Queue<HealthCheckJob> => {
 
 // @deprecated - Use getQueue() instead. This is kept for backwards compatibility
 // but now returns the singleton queue.
-export const createQueue = (): Queue<HealthCheckJob> => {
+export const createQueue = (): HealthCheckQueue => {
   logger.warn('createQueue() is deprecated, use getQueue() instead');
   return getQueue();
 };
 
 export const createWorker = (
-  processor: (job: Job<HealthCheckJob>) => Promise<void>
+  processor: (job: HealthCheckQueueJob) => Promise<void>
 ) => {
-  const worker = new Worker<HealthCheckJob>(QUEUE_NAME, processor, {
-    connection: getWorkerConnection(),
+  const worker = new Worker<HealthCheckJob, void, string>(QUEUE_NAME, processor, {
+    connection: asBullConnection(getWorkerConnection()),
     concurrency: WORKER_CONCURRENCY,
     limiter: {
       max: QUEUE_RATE_LIMIT_MAX,
@@ -140,7 +146,9 @@ export const createWorker = (
 };
 
 export const createQueueEvents = () => {
-  return new QueueEvents(QUEUE_NAME, { connection: getEventsConnection() });
+  return new QueueEvents(QUEUE_NAME, {
+    connection: asBullConnection(getEventsConnection()),
+  });
 };
 
 // Graceful shutdown helper - call this during app shutdown
