@@ -8,6 +8,10 @@ import {
   SCHEDULER_BATCH_SIZE,
   LOCK_DURATION_MS,
 } from '../lib/constants';
+import {
+  getEffectiveMonitoringIntervalMs,
+  shouldRunContinuousMonitoring,
+} from '../lib/monitor-policy';
 
 let isRunning = false;
 let intervalHandle: Timer | null = null;
@@ -56,13 +60,29 @@ export async function schedulerTick(): Promise<number> {
     let queued = 0;
 
     for (const link of dueLinks) {
+      if (!shouldRunContinuousMonitoring(link.environment)) {
+        await db
+          .update(monitoredLinks)
+          .set({
+            isActive: false,
+            schedulerLockedUntil: null,
+            updatedAt: now,
+          })
+          .where(eq(monitoredLinks.id, link.id));
+        logger.info(
+          { linkId: link.id, environment: link.environment },
+          'Disabled continuous development monitoring'
+        );
+        continue;
+      }
+
       const job: HealthCheckJob = {
         linkId: link.id,
         convexUrlId: link.convexUrlId,
-        convexUserId: link.convexUserId,
         longUrl: link.longUrl,
         shortUrl: link.shortUrl,
-        environment: link.environment as 'dev' | 'prod',
+        environment: link.environment,
+        source: 'scheduled',
       };
 
       // Add to queue
@@ -71,12 +91,16 @@ export async function schedulerTick(): Promise<number> {
       });
 
       // Update next_check_at and set lock to prevent double-scheduling
-      const nextCheckAt = new Date(now.getTime() + link.intervalMs);
+      const monitoringIntervalMs = getEffectiveMonitoringIntervalMs(
+        link.intervalMs
+      );
+      const nextCheckAt = new Date(now.getTime() + monitoringIntervalMs);
       const lockUntil = new Date(now.getTime() + LOCK_DURATION_MS);
 
       await db
         .update(monitoredLinks)
         .set({
+          intervalMs: monitoringIntervalMs,
           nextCheckAt,
           schedulerLockedUntil: lockUntil,
           updatedAt: now,

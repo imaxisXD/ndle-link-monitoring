@@ -23,11 +23,4 @@ export const DEGRADED_THRESHOLD_MS = parseInt(
 );
 
 // Default monitoring interval for new links
-export const DEFAULT_INTERVAL_MS = 60000; // 1 minute
-
-// Tier-based intervals (for future use)
-export const TIER_INTERVALS = {
-  free: 300000, // 5 minutes
-  pro: 60000, // 1 minute
-  enterprise: 30000, // 30 seconds
-} as const;
+export const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes

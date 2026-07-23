@@ -14,10 +14,10 @@ const QUEUE_NAME = 'link-health-checks';
 export interface HealthCheckJob {
   linkId: string; // PostgreSQL UUID
   convexUrlId: string;
-  convexUserId: string;
   longUrl: string;
   shortUrl: string;
   environment: 'dev' | 'prod'; // Which Convex instance to write results to
+  source?: 'scheduled' | 'manual';
 }
 type HealthCheckQueue = Queue<HealthCheckJob, void, string>;
 type HealthCheckQueueJob = Job<HealthCheckJob, void, string>;

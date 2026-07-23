@@ -187,9 +187,8 @@ export type PublicApiType = {
         shortUrl: string;
         statusCode: number;
         urlId: string;
-        userId: string;
       },
-      any
+      { success: true } | { success: false; reason: 'url_not_found' }
     >;
   };
 };

@@ -9,6 +9,11 @@ import { createWorkerLogger, logger } from '../lib/logger';
 import * as Sentry from '@sentry/bun';
 import { api } from '../types/convexApiTypes';
 import { redactUrlForLogs } from '../lib/url-safety';
+import {
+  shouldDisableMissingMonitor,
+  shouldRunMonitoringJob,
+  type RecordHealthCheckResult,
+} from '../lib/monitor-policy';
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
@@ -16,10 +21,32 @@ Sentry.init({
 });
 
 async function processJob(job: Job<HealthCheckJob>): Promise<void> {
-  const { linkId, convexUrlId, convexUserId, longUrl, shortUrl, environment } =
-    job.data;
+  const {
+    linkId,
+    convexUrlId,
+    longUrl,
+    shortUrl,
+    environment,
+    source = 'scheduled',
+  } = job.data;
   const log = createWorkerLogger(job.id!, linkId);
   const redactedUrl = redactUrlForLogs(longUrl);
+
+  if (!shouldRunMonitoringJob(environment, source)) {
+    await db
+      .update(monitoredLinks)
+      .set({
+        isActive: false,
+        schedulerLockedUntil: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(monitoredLinks.id, linkId));
+    log.info(
+      { environment },
+      'Skipped continuous development monitoring and disabled the monitor'
+    );
+    return;
+  }
 
   log.info({ url: redactedUrl }, 'Processing health check');
 
@@ -69,12 +96,11 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
       { environment },
       '[Link Monitoring] | Recording health check to Convex'
     );
-    const response_data = await convexClient.mutation(
+    const recordResult = (await convexClient.mutation(
       api.linkHealth.recordHealthCheck,
       {
         sharedSecret,
         urlId: convexUrlId,
-        userId: convexUserId,
         shortUrl,
         longUrl,
         statusCode: result.statusCode,
@@ -84,10 +110,25 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
         errorMessage: result.errorMessage,
         checkedAt: now.getTime(),
       }
-    );
-    if (response_data) {
-      log.debug({ response_data }, 'Convex health check recorded');
+    )) as RecordHealthCheckResult;
+
+    if (shouldDisableMissingMonitor(recordResult)) {
+      await db
+        .update(monitoredLinks)
+        .set({
+          isActive: false,
+          schedulerLockedUntil: null,
+          updatedAt: now,
+        })
+        .where(eq(monitoredLinks.id, linkId));
+      log.warn(
+        { convexUrlId, environment },
+        'Convex URL no longer exists; monitoring disabled'
+      );
+      return;
     }
+
+    log.debug('Convex health check recorded');
   } catch (error) {
     log.error(
       { error: error instanceof Error ? error.message : 'Unknown' },

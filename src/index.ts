@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import * as Sentry from '@sentry/bun';
 import { db } from './db';
 import { monitoredLinks, NewMonitoredLink } from './db/schema';
@@ -8,6 +8,11 @@ import { getQueue, closeAllConnections } from './queue/factory';
 import { logger, createRequestLogger } from './lib/logger';
 import { DEFAULT_INTERVAL_MS } from './lib/constants';
 import { assertSafeHttpUrl } from './lib/url-safety';
+import {
+  getEffectiveMonitoringIntervalMs,
+  shouldRunContinuousMonitoring,
+  type MonitoringEnvironment,
+} from './lib/monitor-policy';
 
 // Initialize Sentry first
 Sentry.init({
@@ -120,15 +125,32 @@ const app = new Elysia()
             longUrl: normalizedLongUrl,
             shortUrl: body.shortUrl,
             environment: body.environment || 'prod',
-            intervalMs: body.intervalMs || DEFAULT_INTERVAL_MS,
+            intervalMs: getEffectiveMonitoringIntervalMs(
+              body.intervalMs || DEFAULT_INTERVAL_MS
+            ),
             nextCheckAt: new Date(), // Check immediately
-            isActive: true,
+            isActive: shouldRunContinuousMonitoring(
+              body.environment || 'prod'
+            ),
           };
 
           const [inserted] = await db
             .insert(monitoredLinks)
             .values(newLink)
-            .onConflictDoNothing() // Idempotent
+            .onConflictDoUpdate({
+              target: monitoredLinks.convexUrlId,
+              set: {
+                convexUserId: newLink.convexUserId,
+                longUrl: newLink.longUrl,
+                shortUrl: newLink.shortUrl,
+                environment: newLink.environment,
+                intervalMs: newLink.intervalMs,
+                nextCheckAt: newLink.nextCheckAt,
+                schedulerLockedUntil: null,
+                isActive: newLink.isActive,
+                updatedAt: new Date(),
+              },
+            })
             .returning();
 
           if (!inserted) {
@@ -168,6 +190,8 @@ const app = new Elysia()
           }
 
           const links: NewMonitoredLink[] = [];
+          const environment = (body.environment ||
+            'prod') as MonitoringEnvironment;
           for (const link of body.links) {
             try {
               links.push({
@@ -175,13 +199,14 @@ const app = new Elysia()
                 convexUserId: link.convexUserId,
                 longUrl: (await assertSafeHttpUrl(link.longUrl)).toString(),
                 shortUrl: link.shortUrl,
-                environment: body.environment || 'prod',
-                intervalMs:
+                environment,
+                intervalMs: getEffectiveMonitoringIntervalMs(
                   typeof link.intervalMs === 'string'
                     ? parseInt(link.intervalMs)
-                    : link.intervalMs || DEFAULT_INTERVAL_MS,
+                    : link.intervalMs || DEFAULT_INTERVAL_MS
+                ),
                 nextCheckAt: new Date(),
-                isActive: true,
+                isActive: shouldRunContinuousMonitoring(environment),
               });
             } catch (error) {
               set.status = 400;
@@ -196,7 +221,20 @@ const app = new Elysia()
           const result = await db
             .insert(monitoredLinks)
             .values(links)
-            .onConflictDoNothing()
+            .onConflictDoUpdate({
+              target: monitoredLinks.convexUrlId,
+              set: {
+                convexUserId: sql`excluded.convex_user_id`,
+                longUrl: sql`excluded.long_url`,
+                shortUrl: sql`excluded.short_url`,
+                environment: sql`excluded.environment`,
+                intervalMs: sql`excluded.interval_ms`,
+                nextCheckAt: sql`excluded.next_check_at`,
+                isActive: sql`excluded.is_active`,
+                schedulerLockedUntil: null,
+                updatedAt: new Date(),
+              },
+            })
             .returning({ id: monitoredLinks.id });
 
           log.info({ inserted: result.length }, 'Batch registration complete');
@@ -215,6 +253,46 @@ const app = new Elysia()
                 shortUrl: t.String(),
                 intervalMs: t.Optional(t.Number()),
               })
+            ),
+          }),
+        }
+      )
+
+      // POST /monitors/unregister - Disable by Convex URL ID
+      .post(
+        '/unregister',
+        async ({ body, log }) => {
+          const environment = body.environment || 'prod';
+          const disabled = await db
+            .update(monitoredLinks)
+            .set({
+              isActive: false,
+              schedulerLockedUntil: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(monitoredLinks.convexUrlId, body.convexUrlId),
+                eq(monitoredLinks.environment, environment)
+              )
+            )
+            .returning({ id: monitoredLinks.id });
+
+          log.info(
+            {
+              convexUrlId: body.convexUrlId,
+              environment,
+              disabledCount: disabled.length,
+            },
+            'Monitoring disabled by Convex URL ID'
+          );
+          return { success: true, disabledCount: disabled.length };
+        },
+        {
+          body: t.Object({
+            convexUrlId: t.String(),
+            environment: t.Optional(
+              t.Union([t.Literal('dev'), t.Literal('prod')])
             ),
           }),
         }
@@ -239,10 +317,10 @@ const app = new Elysia()
             {
               linkId: link.id,
               convexUrlId: link.convexUrlId,
-              convexUserId: link.convexUserId,
               longUrl: link.longUrl,
               shortUrl: link.shortUrl,
-              environment: link.environment as 'dev' | 'prod',
+              environment: link.environment,
+              source: 'manual',
             },
             {
               priority: 1, // High priority
