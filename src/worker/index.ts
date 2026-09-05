@@ -7,12 +7,11 @@ import { checkUrl } from '../lib/checker';
 import { getConvexClient } from '../lib/convex';
 import { createWorkerLogger, logger } from '../lib/logger';
 import * as Sentry from '@sentry/bun';
-import { api } from '../types/convexApiTypes';
+import { recordHealthCheck } from '../types/convexApiTypes';
 import { redactUrlForLogs } from '../lib/url-safety';
 import {
   shouldDisableMissingMonitor,
   shouldRunMonitoringJob,
-  type RecordHealthCheckResult,
 } from '../lib/monitor-policy';
 
 Sentry.init({
@@ -96,8 +95,8 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
       { environment },
       '[Link Monitoring] | Recording health check to Convex'
     );
-    const recordResult = (await convexClient.mutation(
-      api.linkHealth.recordHealthCheck,
+    const recordResult = await convexClient.mutation(
+      recordHealthCheck,
       {
         sharedSecret,
         urlId: convexUrlId,
@@ -110,7 +109,7 @@ async function processJob(job: Job<HealthCheckJob>): Promise<void> {
         errorMessage: result.errorMessage,
         checkedAt: now.getTime(),
       }
-    )) as RecordHealthCheckResult;
+    );
 
     if (shouldDisableMissingMonitor(recordResult)) {
       await db

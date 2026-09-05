@@ -176,11 +176,8 @@ export async function checkUrl(
           healthStatus,
           url: redactedUrl,
           isBotProtected: true,
-          note: 'Site is UP but has bot protection enabled - monitoring requests are blocked',
-          recommendation:
-            'The site is functioning correctly but blocks automated monitoring; consider this as UP',
         },
-        'URL is UP (Bot Protected) - Site has bot protection enabled'
+        'Health check received HTTP 403'
       );
     } else if (healthStatus === 'down') {
       requestLogger.error(
@@ -190,24 +187,6 @@ export async function checkUrl(
           latencyMs,
           healthStatus,
           url: redactedUrl,
-          possibleCauses: [
-            response.status >= 500
-              ? 'Server error - the target server may be experiencing issues or overloaded'
-              : null,
-            response.status === 404
-              ? 'Not Found - the URL path may have changed or been removed'
-              : null,
-            response.status === 401
-              ? 'Unauthorized - the resource requires authentication'
-              : null,
-            response.status === 400
-              ? 'Bad Request - malformed URL or request parameters'
-              : null,
-          ].filter(Boolean),
-          recommendation:
-            response.status >= 500
-              ? 'Check if the target server is operational and responding to other requests'
-              : 'Verify the URL is correct and accessible from a browser',
         },
         `URL is DOWN - HTTP ${response.status} response received`
       );
@@ -221,16 +200,6 @@ export async function checkUrl(
           url: redactedUrl,
           threshold: DEGRADED_THRESHOLD_MS,
           exceededBy: latencyMs - DEGRADED_THRESHOLD_MS,
-          possibleCauses: [
-            'High server load or resource contention on target server',
-            'Network latency or routing issues between monitoring service and target',
-            'Slow DNS resolution',
-            'SSL/TLS handshake delays',
-            'Large response payload or slow backend processing',
-            'Geographic distance to server causing latency',
-          ],
-          recommendation:
-            'Monitor for patterns - occasional spikes may be normal, persistent degradation indicates performance issues',
         },
         `URL is DEGRADED - Response took ${latencyMs}ms (threshold: ${DEGRADED_THRESHOLD_MS}ms)`
       );
@@ -242,8 +211,6 @@ export async function checkUrl(
           latencyMs,
           healthStatus,
           url: redactedUrl,
-          responseTime: `${latencyMs}ms`,
-          serverStatus: 'Responding normally',
         },
         'Health check completed - URL is UP'
       );
@@ -269,21 +236,6 @@ export async function checkUrl(
         error: errorMessage,
         isTimeout,
         url: redactedUrl,
-        possibleCauses: isTimeout
-          ? [
-              'Server took too long to respond',
-              'Network timeout - DNS or connection issues',
-              'Server may be overloaded or unresponsive',
-            ]
-          : [
-              'DNS resolution failure',
-              'Connection refused - server may be down',
-              'SSL/TLS certificate error',
-              'Network unreachable',
-            ],
-        recommendation: isTimeout
-          ? 'Check if the server is responding to other requests; consider increasing timeout threshold'
-          : 'Verify server is running and accessible; check DNS and network connectivity',
       },
       `Health check failed - ${isTimeout ? 'Request timed out' : errorMessage}`
     );

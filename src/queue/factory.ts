@@ -1,4 +1,4 @@
-import { Queue, Worker, Job, QueueEvents, type ConnectionOptions } from 'bullmq';
+import { Queue, Worker, Job, type ConnectionOptions } from 'bullmq';
 import IORedis from 'ioredis';
 import * as Sentry from '@sentry/bun';
 import { connectionUrl, redisConfig } from './config';
@@ -25,7 +25,6 @@ type HealthCheckQueueJob = Job<HealthCheckJob, void, string>;
 // Singleton Redis connections to prevent connection leaks
 let sharedQueueConnection: IORedis | null = null;
 let sharedWorkerConnection: IORedis | null = null;
-let sharedEventsConnection: IORedis | null = null;
 
 // Singleton queue instance
 let sharedQueue: HealthCheckQueue | null = null;
@@ -72,25 +71,6 @@ function getWorkerConnection(): IORedis {
   return sharedWorkerConnection;
 }
 
-function getEventsConnection(): IORedis {
-  if (!sharedEventsConnection) {
-    sharedEventsConnection = new IORedis(connectionUrl, {
-      ...redisConfig,
-      lazyConnect: true,
-    });
-    sharedEventsConnection.on('error', err => {
-      logger.error({ error: err.message }, 'Events Redis connection error');
-      Sentry.captureException(err, {
-        tags: { component: 'redis', connection: 'events' },
-      });
-    });
-    sharedEventsConnection.on('connect', () => {
-      logger.info('Events Redis connection established');
-    });
-  }
-  return sharedEventsConnection;
-}
-
 // Returns a singleton queue instance - DO NOT call .close() on this
 export const getQueue = (): HealthCheckQueue => {
   if (!sharedQueue) {
@@ -105,13 +85,6 @@ export const getQueue = (): HealthCheckQueue => {
     });
   }
   return sharedQueue;
-};
-
-// @deprecated - Use getQueue() instead. This is kept for backwards compatibility
-// but now returns the singleton queue.
-export const createQueue = (): HealthCheckQueue => {
-  logger.warn('createQueue() is deprecated, use getQueue() instead');
-  return getQueue();
 };
 
 export const createWorker = (
@@ -145,12 +118,6 @@ export const createWorker = (
   return worker;
 };
 
-export const createQueueEvents = () => {
-  return new QueueEvents(QUEUE_NAME, {
-    connection: asBullConnection(getEventsConnection()),
-  });
-};
-
 // Graceful shutdown helper - call this during app shutdown
 export async function closeAllConnections(): Promise<void> {
   logger.info('Closing all Redis connections...');
@@ -168,11 +135,6 @@ export async function closeAllConnections(): Promise<void> {
   if (sharedWorkerConnection) {
     sharedWorkerConnection.disconnect();
     sharedWorkerConnection = null;
-  }
-
-  if (sharedEventsConnection) {
-    sharedEventsConnection.disconnect();
-    sharedEventsConnection = null;
   }
 
   logger.info('All Redis connections closed');
