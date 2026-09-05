@@ -12,6 +12,7 @@ import {
 const QUEUE_NAME = 'link-health-checks';
 
 export interface HealthCheckJob {
+  checkId?: string;
   linkId: string; // PostgreSQL UUID
   convexUrlId: string;
   longUrl: string;
@@ -37,6 +38,7 @@ function getQueueConnection(): IORedis {
   if (!sharedQueueConnection) {
     sharedQueueConnection = new IORedis(connectionUrl, {
       ...redisConfig,
+      maxRetriesPerRequest: 1,
       lazyConnect: true,
     });
     sharedQueueConnection.on('error', err => {
@@ -77,7 +79,7 @@ export const getQueue = (): HealthCheckQueue => {
     sharedQueue = new Queue<HealthCheckJob, void, string>(QUEUE_NAME, {
       connection: asBullConnection(getQueueConnection()),
       defaultJobOptions: {
-        attempts: 3,
+        attempts: 1, // PostgreSQL schedules durable delivery retries.
         backoff: { type: 'exponential', delay: 1000 },
         removeOnComplete: { count: 1000 }, // Keep last 1000 for debugging
         removeOnFail: { count: 5000 }, // Keep last 5000 failures

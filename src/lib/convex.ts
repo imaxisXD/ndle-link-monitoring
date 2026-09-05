@@ -1,33 +1,19 @@
 import { ConvexHttpClient } from 'convex/browser';
+import { enabledEnvironments } from './config';
 
 export type Environment = 'dev' | 'prod';
+const clients = new Map<Environment, ConvexHttpClient>();
 
-const CONVEX_URLS: Record<Environment, string> = {
-  dev: process.env.CONVEX_URL_DEV || '',
-  prod: process.env.CONVEX_URL_PROD || '',
-};
-
-// Validate configuration on startup
-if (!CONVEX_URLS.dev) {
-  console.warn(
-    '[Monitoring Service] CONVEX_URL_DEV not set - dev Convex writes will fail'
-  );
-}
-if (!CONVEX_URLS.prod) {
-  console.warn(
-    '[Monitoring Service] CONVEX_URL_PROD not set - prod Convex writes will fail'
-  );
-}
-
-// Create clients for each environment
-export const convexClients: Record<Environment, ConvexHttpClient> = {
-  dev: new ConvexHttpClient(CONVEX_URLS.dev),
-  prod: new ConvexHttpClient(CONVEX_URLS.prod),
-};
-
-/**
- * Get the Convex client for the specified environment
- */
-export function getConvexClient(env: Environment): ConvexHttpClient {
-  return convexClients[env];
+export function getConvexClient(environment: Environment): ConvexHttpClient {
+  if (!enabledEnvironments().includes(environment)) {
+    throw new Error(`Checks for ${environment} are not enabled on this worker`);
+  }
+  let client = clients.get(environment);
+  if (!client) {
+    const address = process.env[`CONVEX_URL_${environment.toUpperCase()}`];
+    if (!address) throw new Error(`Convex URL for ${environment} is required`);
+    client = new ConvexHttpClient(address);
+    clients.set(environment, client);
+  }
+  return client;
 }

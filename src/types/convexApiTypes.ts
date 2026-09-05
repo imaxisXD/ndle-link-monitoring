@@ -6,7 +6,9 @@ export const recordHealthCheck = makeFunctionReference<
   {
     checkedAt: number;
     errorMessage?: string;
-    healthStatus: 'up' | 'down' | 'degraded';
+    healthStatus: 'up' | 'down' | 'degraded' | 'unknown';
+    checkId: string;
+    monitoringVersion: number;
     isHealthy: boolean;
     latencyMs: number;
     longUrl: string;

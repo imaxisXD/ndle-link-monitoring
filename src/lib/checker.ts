@@ -6,7 +6,7 @@ export interface CheckResult {
   statusCode: number;
   latencyMs: number;
   isHealthy: boolean;
-  healthStatus: 'up' | 'down' | 'degraded';
+  healthStatus: 'up' | 'down' | 'degraded' | 'unknown';
   errorMessage?: string;
 }
 
@@ -118,9 +118,9 @@ export async function checkUrl(
   const start = Date.now();
   const redactedUrl = redactUrlForLogs(longUrl);
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
 
     // Try HEAD first (faster, no body download)
     let response = await makeRequest(
@@ -150,16 +150,16 @@ export async function checkUrl(
       );
     }
 
-    clearTimeout(timeoutId);
     const latencyMs = Date.now() - start;
 
     // Check if bot-protected (403 after GET retry means site is up but blocking us)
     const isBotProtected = response.status === 403;
-    // Site is healthy if 2xx/3xx OR if it's bot-protected (site is up, just blocking monitoring)
-    const isHealthy =
-      (response.status >= 200 && response.status < 400) || isBotProtected;
-    // Bot-protected sites are treated as 'up' since the site is actually responding
-    const healthStatus: 'up' | 'down' | 'degraded' = !isHealthy
+    // A blocked request cannot confirm whether visitors can reach the destination.
+    const isHealthy = response.status >= 200 && response.status < 400;
+    // Keep blocked checks separate from confirmed healthy or unhealthy results.
+    const healthStatus: CheckResult['healthStatus'] = isBotProtected
+      ? 'unknown'
+      : !isHealthy
       ? 'down'
       : latencyMs > DEGRADED_THRESHOLD_MS
         ? 'degraded'
@@ -167,7 +167,7 @@ export async function checkUrl(
 
     // Log based on health status with appropriate severity and details
     if (isBotProtected) {
-      // Special logging for bot-protected sites (status is 'up' but we log the protection info)
+      // A response proves reachability, but access is still unknown.
       requestLogger.info(
         {
           component: 'url-checker',
@@ -247,5 +247,7 @@ export async function checkUrl(
       healthStatus: 'down',
       errorMessage,
     };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

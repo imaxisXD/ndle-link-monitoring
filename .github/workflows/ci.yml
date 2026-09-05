@@ -1,0 +1,35 @@
+name: Monitoring checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: monitor-test-only
+          POSTGRES_DB: monitoring_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+    env:
+      DATABASE_URL: postgres://postgres:monitor-test-only@127.0.0.1:5432/monitoring_test
+      MONITOR_TEST_DATABASE_URL: postgres://postgres:monitor-test-only@127.0.0.1:5432/monitoring_test
+      MONITOR_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun node_modules/typescript/bin/tsc --noEmit
+      - run: bun run db:migrate
+      - run: bun test
