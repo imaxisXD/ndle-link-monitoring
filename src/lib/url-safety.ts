@@ -1,5 +1,6 @@
+import type { LookupAddress } from 'node:dns';
 import { lookup } from 'node:dns/promises';
-import { BlockList, type LookupFunction } from 'node:net';
+import { BlockList, isIP, type LookupFunction } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
@@ -20,16 +21,45 @@ export function isBlockedAddress(address: string, family: number): boolean {
   return family !== 4 && family !== 6 || blocked.check(address, family === 4 ? 'ipv4' : 'ipv6');
 }
 
-async function resolveSafeUrl(input: string) {
-  const url = new URL(input);
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Only HTTP and HTTPS URLs can be monitored');
-  if (url.username || url.password) throw new Error('URLs with credentials cannot be monitored');
+// A URL that can never be monitored. The message is safe to return to callers.
+export class InvalidUrlError extends Error {
+  readonly code = 'invalid_url';
+}
+
+export type ResolveHost = (hostname: string) => Promise<LookupAddress[]>;
+const resolveAll: ResolveHost = hostname => lookup(hostname, { all: true, verbatim: true });
+// DNS answers meaning the domain has no address, for example after it expired.
+const UNRESOLVED_DOMAIN_CODES = new Set(['ENOTFOUND', 'ENODATA', 'EAI_NONAME', 'EAI_NODATA']);
+
+function parseHttpUrl(input: string) {
+  let url: URL;
+  try { url = new URL(input); } catch { throw new InvalidUrlError('Invalid URL'); }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new InvalidUrlError('Only HTTP and HTTPS URLs can be monitored');
+  if (url.username || url.password) throw new InvalidUrlError('URLs with credentials cannot be monitored');
   const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (hostname === 'localhost' || hostname.endsWith('.localhost')) throw new Error('Localhost URLs cannot be monitored');
+  const name = hostname.replace(/\.$/, '');
+  if (name === 'localhost' || name.endsWith('.localhost')) throw new InvalidUrlError('Localhost URLs cannot be monitored');
+  return { url, hostname };
+}
+
+// Registration must not depend on DNS: an expired domain should be registered and then reported as down.
+// Each check still resolves the hostname, pins the connection and refuses private addresses.
+export function validateRegistrationUrl(input: string): URL {
+  const { url, hostname } = parseHttpUrl(input);
+  const family = isIP(hostname);
+  if (family && isBlockedAddress(hostname, family)) throw new InvalidUrlError('URL points to a private network address');
+  return url;
+}
+
+async function resolveSafeUrl(input: string, resolveHost: ResolveHost) {
+  const { url, hostname } = parseHttpUrl(input);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const records = await Promise.race([
-      lookup(hostname, { all: true, verbatim: true }),
+      // Checks record this message, so replace the raw resolver error with a clear one.
+      resolveHost(hostname).catch(error => {
+        throw UNRESOLVED_DOMAIN_CODES.has(error?.code) ? new Error('Domain does not resolve') : error;
+      }),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('URL hostname lookup timed out')), 5000); }),
     ]);
     if (!records.length || records.some(record => isBlockedAddress(record.address, record.family))) {
@@ -39,14 +69,10 @@ async function resolveSafeUrl(input: string) {
   } finally { clearTimeout(timer); }
 }
 
-export async function assertSafeHttpUrl(input: string): Promise<URL> {
-  return (await resolveSafeUrl(input)).url;
-}
-
-export async function safeFetch(input: string, init: RequestInit): Promise<Response> {
+export async function safeFetch(input: string, init: RequestInit, resolveHost = resolveAll): Promise<Response> {
   let target = input;
   for (let redirects = 0; redirects <= 3; redirects++) {
-    const { url, records } = await resolveSafeUrl(target);
+    const { url, records } = await resolveSafeUrl(target, resolveHost);
     // Pin the connection to the addresses we checked. Keeping the URL preserves Host and TLS SNI.
     const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
       if (options.all) callback(null, records);

@@ -114,3 +114,10 @@ Register and unregister acknowledgements include `success`, the stored
 receipt confirms the requested state or a newer version. During the Convex-first
 rollout, an older monitoring service response leaves the job pending; upgrading
 this service lets the same job complete on retry.
+
+Registration validates the URL without DNS, so a domain that no longer resolves
+is registered and then reported as down. A URL that can never be monitored (not
+HTTP/HTTPS, credentials, localhost, or a literal private address) returns HTTP
+400 with `{ "success": false, "code": "invalid_url", "error": "..." }`. Batch
+registration returns HTTP 200 with a per-link `results` entry, so an invalid link
+does not block the others. Other failures remain server errors and are retried.

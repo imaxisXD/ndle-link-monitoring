@@ -4,7 +4,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from './db';
 import { monitorChecks, monitoredLinks } from './db/schema';
 import { getQueue } from './queue/factory';
-import { assertSafeHttpUrl } from './lib/url-safety';
+import { InvalidUrlError, validateRegistrationUrl } from './lib/url-safety';
 import { registerMonitor, unregisterMonitor } from './lib/monitor-store';
 import { componentsReady } from './lib/service-state';
 import { enabledEnvironments } from './lib/config';
@@ -17,6 +17,16 @@ const registrationSchema = t.Object({
   intervalMs: t.Optional(t.Integer({ minimum: 1, maximum: 2147483647 })),
   monitoringVersion: versionSchema,
 });
+
+// Callers treat `invalid_url` as permanent and stop retrying. Other failures stay server errors.
+function normalizeLongUrl(longUrl: string) {
+  try {
+    return { success: true as const, longUrl: validateRegistrationUrl(longUrl).toString() };
+  } catch (error) {
+    if (!(error instanceof InvalidUrlError)) throw error;
+    return { success: false as const, code: 'invalid_url' as const, error: error.message };
+  }
+}
 
 export function createApp(runScheduler: boolean, runWorker: boolean) {
   return new Elysia()
@@ -47,29 +57,26 @@ export function createApp(runScheduler: boolean, runWorker: boolean) {
         }
       })
       .post('/register', async ({ body, set }) => {
-        try {
-          const longUrl = (await assertSafeHttpUrl(body.longUrl)).toString();
-          const row = await registerMonitor({ ...body, longUrl, environment: body.environment ?? 'prod' });
-          if (!row) throw new Error('Monitoring registration was not saved');
-          return { success: true, linkId: row.id, monitoringVersion: row.monitoringVersion, isDeleted: row.isDeleted };
-        } catch (error) {
-          if (error instanceof TypeError || (error instanceof Error && /URL|hostname|private network|Localhost/.test(error.message))) {
-            set.status = 400; return { success: false, error: error instanceof Error ? error.message : 'Invalid URL' };
-          }
-          throw error;
-        }
+        const url = normalizeLongUrl(body.longUrl);
+        if (!url.success) { set.status = 400; return url; }
+        const row = await registerMonitor({ ...body, longUrl: url.longUrl, environment: body.environment ?? 'prod' });
+        if (!row) throw new Error('Monitoring registration was not saved');
+        return { success: true, linkId: row.id, monitoringVersion: row.monitoringVersion, isDeleted: row.isDeleted };
       }, { body: t.Object({ ...registrationSchema.properties, environment: environmentSchema }) })
-      .post('/batch', async ({ body, set }) => {
+      .post('/batch', async ({ body }) => {
         const environment = body.environment ?? 'prod';
-        const links = [];
-        try {
-          for (const link of body.links) links.push({ ...link, environment, longUrl: (await assertSafeHttpUrl(link.longUrl)).toString() });
-        } catch (error) {
-          set.status = 400;
-          return { success: false, error: error instanceof Error ? error.message : 'Invalid URL' };
+        // Invalid URLs are reported per link so they do not block the rest of the batch.
+        const checked = body.links.map(link => ({ link, url: normalizeLongUrl(link.longUrl) }));
+        let inserted = 0;
+        for (const { link, url } of checked) {
+          if (!url.success) continue;
+          await registerMonitor({ ...link, environment, longUrl: url.longUrl });
+          inserted++;
         }
-        for (const link of links) await registerMonitor(link);
-        return { success: true, inserted: links.length };
+        return {
+          success: true, inserted, rejected: checked.length - inserted,
+          results: checked.map(({ link, url }) => url.success ? { convexUrlId: link.convexUrlId, success: true } : { convexUrlId: link.convexUrlId, ...url }),
+        };
       }, { body: t.Object({ environment: environmentSchema, links: t.Array(registrationSchema, { maxItems: 100 }) }) })
       .post('/unregister', async ({ body }) => {
         const row = await unregisterMonitor(body.convexUrlId, body.environment ?? 'prod', body.monitoringVersion);

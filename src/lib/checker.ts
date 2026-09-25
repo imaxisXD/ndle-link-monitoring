@@ -1,6 +1,6 @@
 import { logger } from './logger';
 import { CHECK_TIMEOUT_MS, DEGRADED_THRESHOLD_MS } from './constants';
-import { redactUrlForLogs, safeFetch } from './url-safety';
+import { redactUrlForLogs, safeFetch, type ResolveHost } from './url-safety';
 
 export interface CheckResult {
   statusCode: number;
@@ -94,7 +94,8 @@ async function makeRequest(
   url: string,
   method: 'HEAD' | 'GET',
   signal: AbortSignal,
-  requestLogger: typeof logger
+  requestLogger: typeof logger,
+  resolveHost?: ResolveHost
 ): Promise<Response> {
   const userAgent = getRandomUserAgent();
   const headers = getBrowserHeaders(userAgent);
@@ -104,16 +105,21 @@ async function makeRequest(
     'Making request'
   );
 
-  return safeFetch(url, {
-    method,
-    signal,
-    headers,
-  });
+  return safeFetch(
+    url,
+    {
+      method,
+      signal,
+      headers,
+    },
+    resolveHost
+  );
 }
 
 export async function checkUrl(
   longUrl: string,
-  requestLogger: typeof logger
+  requestLogger: typeof logger,
+  resolveHost?: ResolveHost
 ): Promise<CheckResult> {
   const start = Date.now();
   const redactedUrl = redactUrlForLogs(longUrl);
@@ -127,7 +133,8 @@ export async function checkUrl(
       longUrl,
       'HEAD',
       controller.signal,
-      requestLogger
+      requestLogger,
+      resolveHost
     );
 
     // If blocked or method not allowed, retry with GET
@@ -146,7 +153,8 @@ export async function checkUrl(
         longUrl,
         'GET',
         controller.signal,
-        requestLogger
+        requestLogger,
+        resolveHost
       );
     }
 
