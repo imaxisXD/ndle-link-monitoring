@@ -1,6 +1,14 @@
 import { logger } from './logger';
 import { CHECK_TIMEOUT_MS, DEGRADED_THRESHOLD_MS } from './constants';
-import { redactUrlForLogs, safeFetch, type ResolveHost } from './url-safety';
+import {
+  CHECK_FAILURES,
+  CheckFailureError,
+  describeCheckFailure,
+  redactUrlForLogs,
+  safeFetch,
+  type ResolveHost,
+  type SendRequest,
+} from './url-safety';
 
 export interface CheckResult {
   statusCode: number;
@@ -82,12 +90,66 @@ function getBrowserHeaders(userAgent: string): Record<string, string> {
   return baseHeaders;
 }
 
-// Status codes that indicate bot blocking - retry with GET
-const BOT_BLOCKED_CODES = [403, 405, 406, 429, 503];
+// Servers that mishandle HEAD often answer these; a GET decides the result.
+const HEAD_FALLBACK_CODES = new Set([400, 403, 404, 405, 406, 501]);
+// Authentication, bot protection and rate limiting say nothing about whether visitors can reach the page.
+const INCONCLUSIVE_CODES = new Set([401, 403, 405, 406, 429, 503]);
 
-// Cloudflare and similar challenge page indicators
-function isLikelyBotChallenge(status: number): boolean {
-  return BOT_BLOCKED_CODES.includes(status);
+export function classifyResponse(
+  status: number,
+  latencyMs: number
+): Pick<CheckResult, 'isHealthy' | 'healthStatus'> {
+  const isHealthy = status >= 200 && status < 400;
+  if (isHealthy) {
+    return {
+      isHealthy,
+      healthStatus: latencyMs > DEGRADED_THRESHOLD_MS ? 'degraded' : 'up',
+    };
+  }
+  return {
+    isHealthy,
+    healthStatus: INCONCLUSIVE_CODES.has(status) ? 'unknown' : 'down',
+  };
+}
+
+// Politeness: at most this many checks in flight per hostname in this process.
+const MAX_CHECKS_PER_HOST = 2;
+const hostSlots = new Map<
+  string,
+  { active: number; waiting: Array<() => void> }
+>();
+
+async function withHostSlot<T>(
+  longUrl: string,
+  run: () => Promise<T>
+): Promise<T> {
+  let host: string;
+  try {
+    host = new URL(longUrl).hostname.replace(/\.$/, '');
+  } catch {
+    return run();
+  }
+  let slots = hostSlots.get(host);
+  if (!slots) {
+    slots = { active: 0, waiting: [] };
+    hostSlots.set(host, slots);
+  }
+  if (slots.active < MAX_CHECKS_PER_HOST) slots.active++;
+  else await new Promise<void>(resolve => slots.waiting.push(resolve));
+  try {
+    return await run();
+  } finally {
+    // Hand the slot to the next waiting check, or release it.
+    const next = slots.waiting.shift();
+    if (next) next();
+    else if (--slots.active === 0) hostSlots.delete(host);
+  }
+}
+
+export interface CheckOptions {
+  resolveHost?: ResolveHost;
+  send?: SendRequest;
+  timeoutMs?: number;
 }
 
 async function makeRequest(
@@ -95,7 +157,7 @@ async function makeRequest(
   method: 'HEAD' | 'GET',
   signal: AbortSignal,
   requestLogger: typeof logger,
-  resolveHost?: ResolveHost
+  options: CheckOptions
 ): Promise<Response> {
   const userAgent = getRandomUserAgent();
   const headers = getBrowserHeaders(userAgent);
@@ -112,36 +174,48 @@ async function makeRequest(
       signal,
       headers,
     },
-    resolveHost
+    options.resolveHost,
+    options.send
   );
 }
 
-export async function checkUrl(
+export function checkUrl(
   longUrl: string,
   requestLogger: typeof logger,
-  resolveHost?: ResolveHost
+  options: CheckOptions = {}
 ): Promise<CheckResult> {
+  return withHostSlot(longUrl, () => measure(longUrl, requestLogger, options));
+}
+
+async function measure(
+  longUrl: string,
+  requestLogger: typeof logger,
+  options: CheckOptions
+): Promise<CheckResult> {
+  // Time only the request itself, not the wait for a host slot.
   const start = Date.now();
   const redactedUrl = redactUrlForLogs(longUrl);
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? CHECK_TIMEOUT_MS
+  );
   try {
-
     // Try HEAD first (faster, no body download)
     let response = await makeRequest(
       longUrl,
       'HEAD',
       controller.signal,
       requestLogger,
-      resolveHost
+      options
     );
 
-    // If blocked or method not allowed, retry with GET
-    if (isLikelyBotChallenge(response.status)) {
+    // Retry once with GET before classifying a response some servers give only to HEAD.
+    if (HEAD_FALLBACK_CODES.has(response.status)) {
       requestLogger.debug(
         { status: response.status },
-        'HEAD request possibly blocked, retrying with GET'
+        'HEAD request was not conclusive, retrying with GET'
       );
 
       // Small delay before retry to avoid rate limiting
@@ -154,27 +228,18 @@ export async function checkUrl(
         'GET',
         controller.signal,
         requestLogger,
-        resolveHost
+        options
       );
     }
 
     const latencyMs = Date.now() - start;
-
-    // Check if bot-protected (403 after GET retry means site is up but blocking us)
-    const isBotProtected = response.status === 403;
-    // A blocked request cannot confirm whether visitors can reach the destination.
-    const isHealthy = response.status >= 200 && response.status < 400;
-    // Keep blocked checks separate from confirmed healthy or unhealthy results.
-    const healthStatus: CheckResult['healthStatus'] = isBotProtected
-      ? 'unknown'
-      : !isHealthy
-      ? 'down'
-      : latencyMs > DEGRADED_THRESHOLD_MS
-        ? 'degraded'
-        : 'up';
+    const { isHealthy, healthStatus } = classifyResponse(
+      response.status,
+      latencyMs
+    );
 
     // Log based on health status with appropriate severity and details
-    if (isBotProtected) {
+    if (healthStatus === 'unknown') {
       // A response proves reachability, but access is still unknown.
       requestLogger.info(
         {
@@ -183,9 +248,8 @@ export async function checkUrl(
           latencyMs,
           healthStatus,
           url: redactedUrl,
-          isBotProtected: true,
         },
-        'Health check received HTTP 403'
+        `Health check was inconclusive - HTTP ${response.status} response received`
       );
     } else if (healthStatus === 'down') {
       requestLogger.error(
@@ -232,27 +296,33 @@ export async function checkUrl(
     };
   } catch (error) {
     const latencyMs = Date.now() - start;
-    const errorMessage =
-      error instanceof Error ? error.message : 'Unknown error';
-    const isTimeout =
-      errorMessage.includes('abort') || errorMessage.includes('timeout');
+    const aborted = controller.signal.aborted;
+    // The owner sees only this fixed message; the detailed error is logged below.
+    const errorMessage = describeCheckFailure(error, aborted);
+    const isTimeout = errorMessage === CHECK_FAILURES.timeout;
+    const healthStatus =
+      !aborted && error instanceof CheckFailureError
+        ? error.healthStatus
+        : 'down';
 
     requestLogger.warn(
       {
         component: 'url-checker',
         latencyMs,
-        error: errorMessage,
+        err: error,
+        failure: errorMessage,
+        healthStatus,
         isTimeout,
         url: redactedUrl,
       },
-      `Health check failed - ${isTimeout ? 'Request timed out' : errorMessage}`
+      `Health check failed - ${errorMessage}`
     );
 
     return {
       statusCode: isTimeout ? 408 : 0,
       latencyMs,
       isHealthy: false,
-      healthStatus: 'down',
+      healthStatus,
       errorMessage,
     };
   } finally {

@@ -85,7 +85,7 @@ export async function schedulerTick(): Promise<number> {
 export async function startScheduler(): Promise<void> {
   if (interval) return;
   await schedulerTick();
-  interval = setInterval(() => { schedulerTick().catch(error => logger.error({ error }, 'Monitor scheduler failed')); }, SCHEDULER_INTERVAL_MS);
+  interval = setInterval(() => { schedulerTick().catch(error => logger.error({ err: error }, 'Monitor scheduler failed')); }, SCHEDULER_INTERVAL_MS);
 }
 
 export async function stopScheduler(): Promise<void> {

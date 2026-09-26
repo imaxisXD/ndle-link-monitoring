@@ -36,6 +36,13 @@
       "when": 1788600000000,
       "tag": "0004_reliable_monitoring",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790429497717,
+      "tag": "0005_delivery_retry_limit",
+      "breakpoints": true
     }
   ]
 }

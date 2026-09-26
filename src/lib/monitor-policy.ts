@@ -41,3 +41,30 @@ export function shouldDisableMissingMonitor(
 ): boolean {
   return result.success === false && result.reason === 'url_not_found';
 }
+
+// With the five-minute maximum backoff, 300 attempts span about a day, so the
+// 24-hour limit decides: a Convex outage of a few hours drops no results.
+export const MAX_DELIVERY_ATTEMPTS = 300;
+export const MAX_DELIVERY_AGE_MS = 24 * 60 * 60 * 1000;
+
+export type DeliveryRetryDecision =
+  | 'retry'
+  | 'attempt_limit'
+  | 'age_limit'
+  | 'superseded';
+
+// A stored result stops retrying after 300 attempts or 24 hours, whichever comes first,
+// or as soon as a newer result for the same link has been delivered.
+export function getDeliveryRetryDecision(
+  attempts: number,
+  storedAt: Date,
+  now: Date,
+  superseded: boolean
+): DeliveryRetryDecision {
+  if (superseded) return 'superseded';
+  if (attempts >= MAX_DELIVERY_ATTEMPTS) return 'attempt_limit';
+  if (now.getTime() - storedAt.getTime() >= MAX_DELIVERY_AGE_MS) {
+    return 'age_limit';
+  }
+  return 'retry';
+}

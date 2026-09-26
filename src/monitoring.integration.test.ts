@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { MAX_DELIVERY_ATTEMPTS } from './lib/monitor-policy';
 
 const address = process.env.MONITOR_TEST_DATABASE_URL;
 const redisAddress = process.env.MONITOR_TEST_REDIS_URL;
@@ -86,6 +87,42 @@ describe('durable monitoring with isolated PostgreSQL and Redis', async () => {
     expect(deliveries).toHaveLength(2);
     expect(deliveries[0]).toEqual(deliveries[1]);
     expect((await db.query.monitorChecks.findFirst())?.finishedAt).not.toBeNull();
+  });
+
+  test('delivery stops at the attempt limit and keeps the result as permanently failed', async () => {
+    const link = await registerMonitor(input);
+    await claimDueChecks();
+    const check = (await db.select().from(monitorChecks))[0];
+    await db.update(monitorChecks).set({ deliveryAttempts: MAX_DELIVERY_ATTEMPTS - 1 }).where(eq(monitorChecks.id, check.id));
+    const job = { id: check.id, data: { ...input, linkId: link!.id, checkId: check.id } };
+    rejectDelivery = true;
+    await expect(processJob(job)).rejects.toThrow('Simulated delivery outage');
+    const failed = await db.query.monitorChecks.findFirst({ where: eq(monitorChecks.id, check.id) });
+    expect(failed).toMatchObject({ deliveryAttempts: MAX_DELIVERY_ATTEMPTS, result, lastError: 'Simulated delivery outage' });
+    expect(failed?.failedAt).toBeInstanceOf(Date);
+    expect(failed?.finishedAt).toEqual(failed!.failedAt);
+    // A permanently failed result is neither dispatched nor delivered again.
+    expect(await dispatchChecks()).toBe(0);
+    const attempted = deliveries.length;
+    rejectDelivery = false;
+    await processJob(job);
+    expect(deliveries).toHaveLength(attempted);
+  });
+
+  test('a result superseded by a newer delivered check stops retrying', async () => {
+    const link = await registerMonitor(input);
+    const at = (ago: number) => new Date(Date.now() - ago);
+    await db.insert(monitorChecks).values([
+      { id: 'older-check', linkId: link!.id, monitoringVersion: 1, source: 'scheduled', scheduledAt: at(120_000), result, measuredAt: at(90_000) },
+      { id: 'newer-check', linkId: link!.id, monitoringVersion: 1, source: 'scheduled', scheduledAt: at(60_000), result, measuredAt: at(30_000), finishedAt: at(20_000) },
+    ]);
+    rejectDelivery = true;
+    await expect(processJob({ id: 'older-check', data: { ...input, linkId: link!.id, checkId: 'older-check' } })).rejects.toThrow('Simulated delivery outage');
+    const older = await db.query.monitorChecks.findFirst({ where: eq(monitorChecks.id, 'older-check') });
+    expect(older?.deliveryAttempts).toBe(1);
+    expect(older?.failedAt).toBeInstanceOf(Date);
+    expect(older?.finishedAt).toBeInstanceOf(Date);
+    expect(measurements).toBe(0);
   });
 
   test('a development-only scheduler leaves production links due', async () => {

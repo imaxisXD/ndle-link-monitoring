@@ -29,9 +29,15 @@ describe('monitor startup and destination protection', () => {
     expect(isBlockedAddress('64:ff9b::7f00:1', 6)).toBe(true);
     expect(isBlockedAddress('8.8.8.8', 4)).toBe(false);
   });
-  test('checks refuse local destinations and URL credentials', async () => {
-    await expect(safeFetch('http://localhost/private', {})).rejects.toThrow('Localhost');
-    await expect(safeFetch('http://name:secret@example.test', {})).rejects.toThrow('credentials');
-    await expect(safeFetch('http://127.0.0.1/private', {})).rejects.toThrow('private network');
+  test('checks refuse local destinations and URL credentials with a fixed message', async () => {
+    for (const input of ['http://localhost/private', 'http://name:secret@example.test', 'http://127.0.0.1/private', 'http://127.0.0.1:5432/']) {
+      await expect(safeFetch(input, {})).rejects.toThrow(/^Destination is not allowed$/);
+    }
+  });
+  test('an invalid SERVER_PUBLIC_IPS stops startup', () => {
+    Object.assign(process.env, { DATABASE_URL: 'test', REDIS_URL: 'test', MONITORING_API_SECRET: 'test', SERVER_PUBLIC_IPS: '45.33.32.156, not-an-ip' });
+    expect(() => validateConfiguration(false)).toThrow('SERVER_PUBLIC_IPS');
+    process.env.SERVER_PUBLIC_IPS = '45.33.32.156, 2a01:4f8:c17:1::1';
+    expect(() => validateConfiguration(false)).not.toThrow();
   });
 });

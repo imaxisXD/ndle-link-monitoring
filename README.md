@@ -15,7 +15,8 @@ cp .env.example .env
 
 Fill in `DATABASE_URL`, `REDIS_URL`, the selected `CONVEX_URL_PROD` or `CONVEX_URL_DEV`,
 `MONITORING_API_SECRET`, and `MONITORING_SHARED_SECRET`. Configure only the Convex URLs selected by `MONITORING_ENVIRONMENTS` (production by default). Sentry
-is optional.
+is optional. `SERVER_PUBLIC_IPS` is an optional comma-separated list of this
+server's public IP addresses; checks never request them (see Destination safety).
 
 Apply migrations to your development database, then start the service:
 
@@ -43,8 +44,10 @@ The policy tests run locally without connecting to Redis, PostgreSQL, or Convex.
 ## Operations
 
 `GET /health` reports that the API process is running. Routes under `/monitors`
-require the bearer token from `MONITORING_API_SECRET`. The API supports registering
-links, batch registration, disabling monitors, reading status, and manual checks.
+require the bearer token from `MONITORING_API_SECRET`, compared in constant time.
+Requests without it get 401 before the body or parameters are read or validated.
+The API supports registering links, batch registration, disabling monitors,
+reading status, and manual checks.
 
 `bun run start` applies database migrations before starting the API and enabled
 background components. `bun run db:generate` creates migrations after schema
@@ -58,7 +61,12 @@ versions. PostgreSQL now records each due check in the same transaction that
 advances its schedule. Redis receives a stable check ID. If Redis is unavailable,
 unfinished database rows are dispatched after it recovers. A destination is
 measured once after a result has been saved; delivery failures retry that saved
-result with a delay of up to five minutes. Completed rows are retained for 35 days.
+result with a delay of up to five minutes. Retries stop after 300 attempts or 24
+hours, whichever comes first (with this backoff, 300 attempts span about a day),
+or as soon as a newer result for the same link has been delivered. The row is then
+finished with `failed_at` set (migration `0005_delivery_retry_limit.sql`) and an
+error is logged. Each Convex request times out after 10 seconds, and deliveries do
+not wait for each other. Completed rows are retained for 35 days.
 A crash before a measurement is saved can repeat the destination request.
 
 Deploy the additive Convex schema and result handler before this service. The new
@@ -90,11 +98,42 @@ uses readiness. Startup validates configuration and required connections before
 opening the API port. Track overdue links and the age of unfinished
 `monitor_checks` rows in operational alerts; process uptime alone is insufficient.
 
-A blocked HTTP 403 check is `unknown`, rather than a confirmed healthy link.
-Unknown checks are excluded from the uptime denominator. The frontend separates
-pending, unknown and overdue checks from current results. Outbound requests pin
-DNS-validated addresses, validate every redirect, reject private/reserved address
-ranges, and stop after response headers instead of downloading the response body.
+## Check results
+
+Each check sends HEAD, then retries once with GET if HEAD returns 400, 403, 404,
+405, 406 or 501. Up to 10 redirects are followed. The final response decides the
+status:
+
+- `up`: 2xx or 3xx; `degraded` when it took longer than `DEGRADED_THRESHOLD_MS`.
+- `down`: 404, 410, 5xx other than 503, other 4xx, and failed connections.
+- `unknown`: 401, 403, 405, 406, 429 and 503. These usually mean bot protection or
+  rate limiting, not an outage. Unknown checks are excluded from the uptime
+  denominator and do not open incidents. The frontend separates pending, unknown
+  and overdue checks from current results.
+
+Failures are reported to the link owner with a short fixed message only: "Domain
+does not resolve", "Connection refused", "Connection timed out" (status code 408),
+"Connection failed", "Secure connection failed", "Too many redirects",
+"Destination is not allowed" or "Unexpected error". Details stay in server logs,
+which record URLs without query strings. At most two checks run at once per
+hostname in each process.
+
+## Destination safety
+
+The monitor shares its VPS with Coolify, the analytics service, PostgreSQL and
+Redis. Outbound requests pin DNS-validated addresses, validate every redirect hop,
+and stop after response headers instead of downloading the response body. Each
+hop is refused when it:
+
+- resolves to a private or reserved address range (reported as `down`);
+- resolves to one of this server's public addresses (reported as `unknown`). The
+  worker learns them at startup and hourly from
+  `https://1.1.1.1/cdn-cgi/trace` and `https://[2606:4700:4700::1111]/cdn-cgi/trace`,
+  and always adds `SERVER_PUBLIC_IPS`. A failed lookup keeps the last known
+  address, logs one warning, and does not stop checks. Set `SERVER_PUBLIC_IPS`
+  when the server has addresses the lookup cannot see;
+- uses an explicit port other than 80, 443, 8080 or 8443 (reported as `unknown`).
+  Registration rejects such URLs with `invalid_url`.
 
 ## Integration verification
 
@@ -117,7 +156,8 @@ this service lets the same job complete on retry.
 
 Registration validates the URL without DNS, so a domain that no longer resolves
 is registered and then reported as down. A URL that can never be monitored (not
-HTTP/HTTPS, credentials, localhost, or a literal private address) returns HTTP
-400 with `{ "success": false, "code": "invalid_url", "error": "..." }`. Batch
-registration returns HTTP 200 with a per-link `results` entry, so an invalid link
-does not block the others. Other failures remain server errors and are retried.
+HTTP/HTTPS, credentials, localhost, a port other than 80, 443, 8080 or 8443, or a
+literal private address) returns HTTP 400 with
+`{ "success": false, "code": "invalid_url", "error": "..." }`. Batch registration
+returns HTTP 200 with a per-link `results` entry, so an invalid link does not
+block the others. Other failures remain server errors and are retried.

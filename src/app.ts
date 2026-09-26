@@ -1,5 +1,5 @@
 import { Elysia, t } from 'elysia';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { db } from './db';
 import { monitorChecks, monitoredLinks } from './db/schema';
@@ -28,6 +28,19 @@ function normalizeLongUrl(longUrl: string) {
   }
 }
 
+const sha256 = (value: string) => createHash('sha256').update(value).digest();
+
+// Hashing gives both sides the same length, so the comparison time does not reveal the secret.
+export function hasValidBearerToken(authorization: string | null, secret: string): boolean {
+  return timingSafeEqual(sha256(authorization ?? ''), sha256(`Bearer ${secret}`));
+}
+
+function authenticate(request: Request): 'allowed' | 'denied' | 'unconfigured' {
+  const secret = process.env.MONITORING_API_SECRET;
+  if (!secret) return 'unconfigured';
+  return hasValidBearerToken(request.headers.get('authorization'), secret) ? 'allowed' : 'denied';
+}
+
 export function createApp(runScheduler: boolean, runWorker: boolean) {
   return new Elysia()
     .get('/', () => ({ status: 'ok', service: 'link-monitoring' }))
@@ -49,12 +62,14 @@ export function createApp(runScheduler: boolean, runWorker: boolean) {
       }
     })
     .group('/monitors', group => group
-      .onBeforeHandle(({ request, set }) => {
-        const secret = process.env.MONITORING_API_SECRET;
-        if (!secret) { set.status = 503; return { error: 'Service is not configured' }; }
-        if (request.headers.get('authorization') !== `Bearer ${secret}`) {
-          set.status = 401; return { error: 'Access denied' };
-        }
+      // Authentication runs before parsing and validation, so callers without the secret never
+      // see schema details. Elysia's beforeHandle runs after validation.
+      // An unauthenticated body is not read; the transform hook then rejects the request.
+      .onParse(({ request }) => authenticate(request) === 'allowed' ? undefined : {})
+      .onTransform(({ request, status }) => {
+        const access = authenticate(request);
+        if (access === 'unconfigured') throw status(503, { error: 'Service is not configured' });
+        if (access === 'denied') throw status(401, { error: 'Access denied' });
       })
       .post('/register', async ({ body, set }) => {
         const url = normalizeLongUrl(body.longUrl);

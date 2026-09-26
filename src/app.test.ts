@@ -1,4 +1,5 @@
 import { afterAll, afterEach, describe, expect, spyOn, test } from 'bun:test';
+import * as crypto from 'node:crypto';
 import * as dns from 'node:dns/promises';
 
 // The integration suite loads the database module against its isolated services, so this suite stays out of its way.
@@ -9,7 +10,7 @@ Object.assign(process.env, { DATABASE_URL: 'postgres://127.0.0.1:1/offline_test'
 
 describe('monitor registration HTTP contract', async () => {
   const monitorStore = await import('./lib/monitor-store');
-  const { createApp } = await import('./app');
+  const { createApp, hasValidBearerToken } = await import('./app');
   const register = spyOn(monitorStore, 'registerMonitor').mockImplementation(async input => ({ id: `link-${input.convexUrlId}`, monitoringVersion: input.monitoringVersion ?? 0, isDeleted: false }));
   const lookup = spyOn(dns, 'lookup');
   afterEach(() => { register.mockClear(); lookup.mockClear(); });
@@ -22,10 +23,12 @@ describe('monitor registration HTTP contract', async () => {
   const request = (path: string, body: unknown) => app.handle(new Request(`http://localhost${path}`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer offline-test' }, body: JSON.stringify(body),
   }));
+  const send = (path: string, init: RequestInit) => app.handle(new Request(`http://localhost${path}`, init));
   const link = { convexUrlId: 'url-1', convexUserId: 'user-1', shortUrl: 'short', monitoringVersion: 3 };
   const rejectedUrls = [
     'not a url', 'ftp://example.com/file', 'https://user:secret@example.com/', 'http://localhost:3000/', 'http://api.localhost/',
     'http://10.0.0.5/', 'http://169.254.169.254/latest/meta-data', 'http://[::1]/', 'http://[fd00::1]/', 'http://[::ffff:127.0.0.1]/',
+    'https://example.com:8000/', 'http://example.com:5432/',
   ];
 
   test('public and unresolvable hostnames register without a DNS lookup', async () => {
@@ -70,6 +73,62 @@ describe('monitor registration HTTP contract', async () => {
     });
     expect(register.mock.calls.map(([input]) => [input.convexUrlId, input.environment])).toEqual([['url-1', 'prod'], ['url-3', 'prod']]);
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('requests without the secret get 401 before the body or parameters are parsed or validated', async () => {
+    const unauthenticated: Array<[string, RequestInit]> = [
+      ['/monitors/register', { method: 'POST', body: '{}' }],
+      ['/monitors/register', { method: 'POST', body: '{"longUrl": 42' }],
+      ['/monitors/register', { method: 'POST', body: JSON.stringify({ ...link, longUrl: 'https://example.com/' }) }],
+      ['/monitors/batch', { method: 'POST', body: JSON.stringify({ links: 'not a list' }) }],
+      ['/monitors/unregister', { method: 'POST', body: '[]' }],
+      ['/monitors/not-a-uuid', { method: 'GET' }],
+      ['/monitors/not-a-uuid/force-check', { method: 'POST' }],
+      ['/monitors/not-a-uuid', { method: 'DELETE' }],
+    ];
+    for (const authorization of [undefined, '', 'Bearer wrong', 'Bearer offline-tes', 'Bearer offline-test-extra', 'offline-test', 'bearer offline-test', 'Basic b2ZmbGluZS10ZXN0']) {
+      for (const [path, init] of unauthenticated) {
+        const response = await send(path, { ...init, headers: { 'content-type': 'application/json', ...(authorization === undefined ? {} : { authorization }) } });
+        expect(response.status).toBe(401);
+        expect(await response.json()).toEqual({ error: 'Access denied' });
+      }
+    }
+    expect(register).not.toHaveBeenCalled();
+    expect((await send('/health', { method: 'GET' })).status).toBe(200);
+  });
+
+  test('authenticated requests are still validated', async () => {
+    const response = await request('/monitors/register', { longUrl: 'https://example.com/' });
+    expect(response.status).toBe(422);
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  test('the bearer secret is compared in constant time', async () => {
+    const compare = spyOn(crypto, 'timingSafeEqual');
+    try {
+      expect(hasValidBearerToken('Bearer offline-test', 'offline-test')).toBe(true);
+      for (const header of [null, '', 'Bearer x', 'Bearer offline-tesT', `Bearer ${'offline-test'.repeat(50)}`]) {
+        expect(hasValidBearerToken(header, 'offline-test')).toBe(false);
+      }
+      expect(compare).toHaveBeenCalledTimes(6);
+      // Both sides are SHA-256 digests, so their length never depends on the input.
+      for (const [actual, expected] of compare.mock.calls) {
+        expect(actual.byteLength).toBe(32);
+        expect(expected.byteLength).toBe(32);
+      }
+      compare.mockClear();
+      expect((await send('/monitors/not-a-uuid', { headers: { authorization: 'Bearer short' } })).status).toBe(401);
+      expect(compare).toHaveBeenCalled();
+    } finally { compare.mockRestore(); }
+  });
+
+  test('routes are unavailable when the API secret is not configured', async () => {
+    delete process.env.MONITORING_API_SECRET;
+    try {
+      const response = await request('/monitors/register', {});
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'Service is not configured' });
+    } finally { process.env.MONITORING_API_SECRET = 'offline-test'; }
   });
 
   test('unexpected storage failures remain server errors', async () => {

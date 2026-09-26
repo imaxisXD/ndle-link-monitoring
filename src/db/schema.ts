@@ -86,6 +86,8 @@ export const monitorChecks = pgTable('monitor_checks', {
   deliveryAttempts: integer('delivery_attempts').notNull().default(0),
   lastError: text('last_error'),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
+  // Set with finishedAt when delivery stopped without Convex confirming the result.
+  failedAt: timestamp('failed_at', { withTimezone: true }),
 }, table => [
   index('idx_monitor_checks_due').on(table.finishedAt, table.nextAttemptAt),
   index('idx_monitor_checks_link').on(table.linkId),

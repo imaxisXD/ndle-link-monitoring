@@ -1,16 +1,26 @@
 import type { Job } from 'bullmq';
-import { and, eq, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { monitoredLinks, monitorChecks } from '../db/schema';
+import { monitoredLinks, monitorChecks, type MonitorCheck } from '../db/schema';
 import { createWorker, type HealthCheckJob } from '../queue/factory';
 import { checkUrl } from '../lib/checker';
 import { getConvexClient } from '../lib/convex';
 import { createWorkerLogger, logger } from '../lib/logger';
 import { recordHealthCheck } from '../types/convexApiTypes';
-import { shouldDisableMissingMonitor, shouldRunMonitoringJob } from '../lib/monitor-policy';
+import { getDeliveryRetryDecision, shouldDisableMissingMonitor, shouldRunMonitoringJob } from '../lib/monitor-policy';
 import { serviceState } from '../lib/service-state';
 import { CHECK_TIMEOUT_MS } from '../lib/constants';
 import { enabledEnvironments } from '../lib/config';
+
+// A newer result for the same link already reached Convex, so this one can no longer change the current status.
+async function hasNewerDeliveredCheck(check: MonitorCheck): Promise<boolean> {
+  const [newer] = await db.select({ id: monitorChecks.id }).from(monitorChecks).where(and(
+    eq(monitorChecks.linkId, check.linkId), ne(monitorChecks.id, check.id),
+    gt(monitorChecks.measuredAt, check.measuredAt ?? check.scheduledAt),
+    isNotNull(monitorChecks.finishedAt), isNull(monitorChecks.failedAt), isNull(monitorChecks.lastError),
+  )).limit(1);
+  return Boolean(newer);
+}
 
 export async function processJob(job: Pick<Job<HealthCheckJob>, 'id' | 'data'>): Promise<void> {
   const checkId = job.data.checkId ?? `legacy-${job.id}`;
@@ -67,11 +77,12 @@ export async function processJob(job: Pick<Job<HealthCheckJob>, 'id' | 'data'>):
     }
     const sharedSecret = process.env.MONITORING_SHARED_SECRET;
     if (!sharedSecret) throw new Error('MONITORING_SHARED_SECRET is required');
+    // skipQueue: deliveries run in parallel instead of behind the shared client's mutation queue.
     const response = await getConvexClient(link.environment).mutation(recordHealthCheck, {
       ...check.result, checkId, monitoringVersion: check.monitoringVersion,
       sharedSecret, urlId: link.convexUrlId, shortUrl: link.shortUrl, longUrl: link.longUrl,
       checkedAt: check.measuredAt.getTime(),
-    });
+    }, { skipQueue: true });
     if (response?.success !== true && !shouldDisableMissingMonitor(response)) throw new Error('Convex did not confirm the check result');
     await db.transaction(async transaction => {
       if (shouldDisableMissingMonitor(response)) await transaction.update(monitoredLinks)
@@ -81,13 +92,22 @@ export async function processJob(job: Pick<Job<HealthCheckJob>, 'id' | 'data'>):
         .where(eq(monitorChecks.id, checkId));
     });
   } catch (error) {
+    const now = new Date();
     const attempts = (check?.deliveryAttempts ?? 0) + 1;
+    const superseded = check ? await hasNewerDeliveredCheck(check).catch(() => false) : false;
+    const decision = check
+      ? getDeliveryRetryDecision(attempts, check.measuredAt ?? check.scheduledAt, now, superseded)
+      : 'retry';
     await db.update(monitorChecks).set({
       deliveryAttempts: sql`${monitorChecks.deliveryAttempts} + 1`,
-      nextAttemptAt: new Date(Date.now() + Math.min(300_000, 1000 * 2 ** Math.min(attempts, 9))),
+      nextAttemptAt: new Date(now.getTime() + Math.min(300_000, 1000 * 2 ** Math.min(attempts, 9))),
       queueLeaseUntil: null,
       lastError: error instanceof Error ? error.message : 'Check delivery failed',
+      // Finished rows are never dispatched again; failedAt records that Convex never confirmed the result.
+      ...(decision === 'retry' ? {} : { finishedAt: now, failedAt: now }),
     }).where(eq(monitorChecks.id, checkId));
+    if (decision === 'superseded') log.warn({ err: error, attempts }, 'Check result superseded by a newer delivered check; retries stopped');
+    else if (decision !== 'retry') log.error({ err: error, attempts, reason: decision }, 'Check result delivery failed permanently');
     throw error;
   }
 }

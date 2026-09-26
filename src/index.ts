@@ -14,11 +14,14 @@ const { sql } = await import('drizzle-orm');
 const scheduler = await import('./scheduler');
 const worker = await import('./worker');
 const { getConvexClient } = await import('./lib/convex');
+const serverAddresses = await import('./lib/server-addresses');
 
 await db.execute(sql`select 1`);
 await getQueue().waitUntilReady();
 if (runWorker) {
   for (const environment of enabledEnvironments()) getConvexClient(environment);
+  // Learn this server's public addresses before the first check, so checks never request it.
+  await serverAddresses.startServerAddressRefresh();
   await worker.startWorker();
 }
 if (runScheduler) await scheduler.startScheduler();
@@ -34,10 +37,11 @@ async function shutdown() {
   await app.stop();
   await scheduler.stopScheduler();
   await worker.shutdownWorker();
+  serverAddresses.stopServerAddressRefresh();
   await closeAllConnections();
   process.exit(0);
 }
-process.on('SIGTERM', () => { shutdown().catch(error => { logger.error({ error }, 'Shutdown failed'); process.exit(1); }); });
-process.on('SIGINT', () => { shutdown().catch(error => { logger.error({ error }, 'Shutdown failed'); process.exit(1); }); });
-process.on('uncaughtException', error => { Sentry.captureException(error); logger.fatal({ error }, 'Monitor service stopped unexpectedly'); process.exit(1); });
-process.on('unhandledRejection', error => { Sentry.captureException(error); logger.fatal({ error }, 'Monitor service stopped unexpectedly'); process.exit(1); });
+process.on('SIGTERM', () => { shutdown().catch(error => { logger.error({ err: error }, 'Shutdown failed'); process.exit(1); }); });
+process.on('SIGINT', () => { shutdown().catch(error => { logger.error({ err: error }, 'Shutdown failed'); process.exit(1); }); });
+process.on('uncaughtException', error => { Sentry.captureException(error); logger.fatal({ err: error }, 'Monitor service stopped unexpectedly'); process.exit(1); });
+process.on('unhandledRejection', error => { Sentry.captureException(error); logger.fatal({ err: error }, 'Monitor service stopped unexpectedly'); process.exit(1); });

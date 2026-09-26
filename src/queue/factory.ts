@@ -42,7 +42,7 @@ function getQueueConnection(): IORedis {
       lazyConnect: true,
     });
     sharedQueueConnection.on('error', err => {
-      logger.error({ error: err.message }, 'Queue Redis connection error');
+      logger.error({ err }, 'Queue Redis connection error');
       Sentry.captureException(err, {
         tags: { component: 'redis', connection: 'queue' },
       });
@@ -61,7 +61,7 @@ function getWorkerConnection(): IORedis {
       lazyConnect: true,
     });
     sharedWorkerConnection.on('error', err => {
-      logger.error({ error: err.message }, 'Worker Redis connection error');
+      logger.error({ err }, 'Worker Redis connection error');
       Sentry.captureException(err, {
         tags: { component: 'redis', connection: 'worker' },
       });
@@ -108,13 +108,13 @@ export const createWorker = (
 
   worker.on('failed', (job, err) => {
     logger.error(
-      { jobId: job?.id, linkId: job?.data.linkId, error: err.message },
+      { jobId: job?.id, linkId: job?.data.linkId, err },
       'Job failed'
     );
   });
 
   worker.on('error', err => {
-    logger.error({ error: err.message }, 'Worker error');
+    logger.error({ err }, 'Worker error');
   });
 
   return worker;
