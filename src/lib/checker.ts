@@ -1,9 +1,6 @@
 import type { CheckResult } from '../types/monitoring';
 import { getBrowserHeaders, getRandomUserAgent } from './browser-headers';
-import {
-  classifyResponse,
-  shouldFallbackToGet,
-} from './check-classification';
+import { classifyResponse, shouldFallbackToGet } from './check-classification';
 import { CHECK_TIMEOUT_MS, DEGRADED_THRESHOLD_MS } from './constants';
 import type { logger } from './logger';
 import { sleep } from './timeout';
@@ -27,10 +24,7 @@ type SlotWaiter = {
   grant: () => void;
 };
 
-const hostSlots = new Map<
-  string,
-  { active: number; waiting: SlotWaiter[] }
->();
+const hostSlots = new Map<string, { active: number; waiting: SlotWaiter[] }>();
 
 export async function withHostSlot<T>(
   longUrl: string,
@@ -185,7 +179,9 @@ function handleCheckError(
   const errorMessage = describeCheckFailure(error, aborted);
   const isTimeout = errorMessage === CHECK_FAILURES.timeout;
   const healthStatus =
-    !aborted && error instanceof CheckFailureError ? error.healthStatus : 'down';
+    !aborted && error instanceof CheckFailureError
+      ? error.healthStatus
+      : 'down';
 
   requestLogger.warn(
     {

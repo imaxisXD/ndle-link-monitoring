@@ -96,7 +96,9 @@ describe('worker job processing and retries', () => {
           },
         }),
       }),
-      transaction: async <T>(fn: (tx: ReturnType<typeof makeTx>) => Promise<T>) => {
+      transaction: async <T>(
+        fn: (tx: ReturnType<typeof makeTx>) => Promise<T>
+      ) => {
         transactionCalls++;
         return fn(makeTx());
       },

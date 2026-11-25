@@ -56,7 +56,10 @@ export function hasValidBearerToken(
   authorization: string | null,
   secret: string
 ): boolean {
-  return timingSafeEqual(sha256(authorization ?? ''), sha256(`Bearer ${secret}`));
+  return timingSafeEqual(
+    sha256(authorization ?? ''),
+    sha256(`Bearer ${secret}`)
+  );
 }
 
 function authenticate(request: Request): 'allowed' | 'denied' | 'unconfigured' {

@@ -117,7 +117,10 @@ describe('monitor startup and destination protection', () => {
     ).rejects.toThrow('Timed out');
 
     const controller = new AbortController();
-    setTimeout(() => controller.abort(new DOMException('Stopped', 'AbortError')), 15);
+    setTimeout(
+      () => controller.abort(new DOMException('Stopped', 'AbortError')),
+      15
+    );
     const started = Date.now();
     await expect(sleep(5_000, controller.signal)).rejects.toThrow('Stopped');
     expect(Date.now() - started).toBeLessThan(500);

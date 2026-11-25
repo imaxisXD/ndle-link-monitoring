@@ -15,7 +15,9 @@ export const USER_AGENTS = [
 ] as const;
 
 export function getRandomUserAgent(random: () => number = Math.random): string {
-  return USER_AGENTS[Math.floor(random() * USER_AGENTS.length)] ?? USER_AGENTS[0];
+  return (
+    USER_AGENTS[Math.floor(random() * USER_AGENTS.length)] ?? USER_AGENTS[0]
+  );
 }
 
 export function getBrowserHeaders(userAgent: string): Record<string, string> {

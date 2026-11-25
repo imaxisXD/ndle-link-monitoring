@@ -96,7 +96,9 @@ describe("learning this server's public addresses", () => {
     const devRefresh = createServerAddressRefresher(failingFetch, {
       warn: () => {},
     });
-    await expect(startServerAddressRefresh(devRefresh)).resolves.toBeUndefined();
+    await expect(
+      startServerAddressRefresh(devRefresh)
+    ).resolves.toBeUndefined();
   });
 
   test('a later failed lookup keeps the last learned address', async () => {

@@ -192,14 +192,12 @@ export async function pruneFinishedChecks(
         .where(lte(monitorChecks.finishedAt, cutoff))
         .limit(PRUNE_BATCH_SIZE);
       if (!old.length) break;
-      await database
-        .delete(monitorChecks)
-        .where(
-          inArray(
-            monitorChecks.id,
-            old.map(row => row.id)
-          )
-        );
+      await database.delete(monitorChecks).where(
+        inArray(
+          monitorChecks.id,
+          old.map(row => row.id)
+        )
+      );
       totalDeleted += old.length;
       if (old.length < PRUNE_BATCH_SIZE) break;
     }
@@ -255,8 +253,5 @@ export async function stopScheduler(): Promise<void> {
   interval = null;
   if (pruneInterval) clearInterval(pruneInterval);
   pruneInterval = null;
-  await Promise.all([
-    running?.catch(() => {}),
-    pruning?.catch(() => {}),
-  ]);
+  await Promise.all([running?.catch(() => {}), pruning?.catch(() => {})]);
 }

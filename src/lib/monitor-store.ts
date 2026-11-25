@@ -74,8 +74,12 @@ export async function registerMonitor(
         nextCheckAt: values.nextCheckAt,
         currentStatus: sql<LinkStatus>`CASE WHEN ${shouldResetStatus} THEN 'pending' ELSE ${monitoredLinks.currentStatus} END`,
         lastCheckedAt: sql<Date | null>`CASE WHEN ${shouldResetStatus} THEN NULL ELSE ${monitoredLinks.lastCheckedAt} END`,
-        lastStatusCode: sql<number | null>`CASE WHEN ${shouldResetStatus} THEN NULL ELSE ${monitoredLinks.lastStatusCode} END`,
-        lastLatencyMs: sql<number | null>`CASE WHEN ${shouldResetStatus} THEN NULL ELSE ${monitoredLinks.lastLatencyMs} END`,
+        lastStatusCode: sql<
+          number | null
+        >`CASE WHEN ${shouldResetStatus} THEN NULL ELSE ${monitoredLinks.lastStatusCode} END`,
+        lastLatencyMs: sql<
+          number | null
+        >`CASE WHEN ${shouldResetStatus} THEN NULL ELSE ${monitoredLinks.lastLatencyMs} END`,
         consecutiveFailures: sql<number>`CASE WHEN ${shouldResetStatus} THEN 0 ELSE ${monitoredLinks.consecutiveFailures} END`,
         updatedAt: now,
       },

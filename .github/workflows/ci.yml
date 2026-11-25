@@ -25,11 +25,13 @@ jobs:
       MONITOR_TEST_DATABASE_URL: postgres://postgres:monitor-test-only@127.0.0.1:5432/monitoring_test
       MONITOR_TEST_REDIS_URL: redis://127.0.0.1:6379/15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - run: bun install --frozen-lockfile
-      - run: bun node_modules/typescript/bin/tsc --noEmit
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run fmt:check
       - run: bun run db:migrate
       - run: bun test

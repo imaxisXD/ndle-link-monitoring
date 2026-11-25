@@ -62,7 +62,9 @@ async function hasNewerDeliveredCheck(
   return Boolean(newer);
 }
 
-export function createJobProcessor(overrides: Partial<WorkerDependencies> = {}) {
+export function createJobProcessor(
+  overrides: Partial<WorkerDependencies> = {}
+) {
   const deps: WorkerDependencies = { ...defaultDeps, ...overrides };
 
   return async function processJob(
@@ -133,7 +135,9 @@ export function createJobProcessor(overrides: Partial<WorkerDependencies> = {}) 
           const [saved] = await transaction
             .update(monitorChecks)
             .set({ result, measuredAt, measurementLeaseUntil: null })
-            .where(and(eq(monitorChecks.id, checkId), isNull(monitorChecks.result)))
+            .where(
+              and(eq(monitorChecks.id, checkId), isNull(monitorChecks.result))
+            )
             .returning();
           if (!saved) return null;
 
@@ -232,7 +236,10 @@ export function createJobProcessor(overrides: Partial<WorkerDependencies> = {}) 
         { skipQueue: true }
       );
 
-      if (response?.success !== true && !shouldDisableMissingMonitor(response)) {
+      if (
+        response?.success !== true &&
+        !shouldDisableMissingMonitor(response)
+      ) {
         throw new Error('Convex did not confirm the check result');
       }
 

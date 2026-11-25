@@ -20,7 +20,8 @@ export async function withTimeout<T>(
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(
-      signal.reason ?? new DOMException('The operation was aborted.', 'AbortError')
+      signal.reason ??
+        new DOMException('The operation was aborted.', 'AbortError')
     );
   }
 

@@ -89,9 +89,7 @@ describe('destination checks without network access', () => {
       ],
       ['http://example.com:8000/', publicAddress],
     ] as const) {
-      expect(
-        await checkUrl(longUrl, silent, { resolveHost, send })
-      ).toEqual({
+      expect(await checkUrl(longUrl, silent, { resolveHost, send })).toEqual({
         statusCode: 0,
         latencyMs: expect.any(Number),
         isHealthy: false,

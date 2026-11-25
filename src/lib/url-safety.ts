@@ -183,13 +183,17 @@ async function resolveSafeUrl(
         new Error('Hostname has no addresses')
       );
     }
-    if (records.some(record => isBlockedAddress(record.address, record.family))) {
+    if (
+      records.some(record => isBlockedAddress(record.address, record.family))
+    ) {
       throw new CheckFailureError(
         CHECK_FAILURES.notAllowed,
         new Error('Destination resolves to a private network address')
       );
     }
-    if (records.some(record => isServerAddress(record.address, record.family))) {
+    if (
+      records.some(record => isServerAddress(record.address, record.family))
+    ) {
       throw new CheckFailureError(
         CHECK_FAILURES.notAllowed,
         new Error("Destination resolves to this server's public address"),

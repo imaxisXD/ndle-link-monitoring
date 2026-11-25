@@ -1,4 +1,12 @@
-import { afterAll, afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from 'bun:test';
 import * as dns from 'node:dns/promises';
 import {
   buildPinnedRequestHeaders,
@@ -409,17 +417,29 @@ describe('check failure messages and pinned transport', () => {
         'Connection timed out',
       ],
       [coded('CERT_HAS_EXPIRED'), false, 'Secure connection failed'],
-      [coded('ERR_TLS_CERT_ALTNAME_INVALID'), false, 'Secure connection failed'],
+      [
+        coded('ERR_TLS_CERT_ALTNAME_INVALID'),
+        false,
+        'Secure connection failed',
+      ],
       [coded('DEPTH_ZERO_SELF_SIGNED_CERT'), false, 'Secure connection failed'],
       [
         coded('UNABLE_TO_VERIFY_LEAF_SIGNATURE'),
         false,
         'Secure connection failed',
       ],
-      [coded('ERR_SSL_WRONG_VERSION_NUMBER'), false, 'Secure connection failed'],
+      [
+        coded('ERR_SSL_WRONG_VERSION_NUMBER'),
+        false,
+        'Secure connection failed',
+      ],
       [coded('ECONNRESET'), false, 'Connection failed'],
       [coded('EHOSTUNREACH'), false, 'Connection failed'],
-      [new CheckFailureError(CHECK_FAILURES.redirects), false, 'Too many redirects'],
+      [
+        new CheckFailureError(CHECK_FAILURES.redirects),
+        false,
+        'Too many redirects',
+      ],
       [
         new CheckFailureError(CHECK_FAILURES.notAllowed),
         true,

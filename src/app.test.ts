@@ -1,4 +1,12 @@
-import { afterAll, afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from 'bun:test';
 import * as crypto from 'node:crypto';
 import * as dns from 'node:dns/promises';
 import { createApp, hasValidBearerToken } from './app';
@@ -11,17 +19,23 @@ describe('monitor registration HTTP contract', () => {
   process.env.MONITORING_API_SECRET = 'offline-test';
 
   const register = mock(
-    async (input: { convexUrlId: string; longUrl: string; monitoringVersion?: number }) => ({
+    async (input: {
+      convexUrlId: string;
+      longUrl: string;
+      monitoringVersion?: number;
+    }) => ({
       id: `link-${input.convexUrlId}`,
       monitoringVersion: input.monitoringVersion ?? 0,
       isDeleted: false,
     })
   );
-  const unregister = mock(async (_convexUrlId: string, _env: 'dev' | 'prod', version = 0) => ({
-    id: 'link-deleted',
-    monitoringVersion: version,
-    isDeleted: true,
-  }));
+  const unregister = mock(
+    async (_convexUrlId: string, _env: 'dev' | 'prod', version = 0) => ({
+      id: 'link-deleted',
+      monitoringVersion: version,
+      isDeleted: true,
+    })
+  );
   const checkDependencies = mock(async () => {});
   const errorLog = mock(() => {});
   const captureException = mock(() => {});
@@ -102,7 +116,10 @@ describe('monitor registration HTTP contract', () => {
       'https://Example.com/landing',
       'https://expired-domain.invalid/offer',
     ]) {
-      const response = await request('/monitors/register', { ...link, longUrl });
+      const response = await request('/monitors/register', {
+        ...link,
+        longUrl,
+      });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({
         success: true,
@@ -111,7 +128,11 @@ describe('monitor registration HTTP contract', () => {
         isDeleted: false,
       });
     }
-    expect(register.mock.calls.map(([input]) => (input as { longUrl: string }).longUrl)).toEqual([
+    expect(
+      register.mock.calls.map(
+        ([input]) => (input as { longUrl: string }).longUrl
+      )
+    ).toEqual([
       'https://example.com/landing',
       'https://expired-domain.invalid/offer',
     ]);
@@ -120,7 +141,10 @@ describe('monitor registration HTTP contract', () => {
 
   test('a URL that can never be monitored is a 400 invalid_url and is not saved', async () => {
     for (const longUrl of rejectedUrls) {
-      const response = await request('/monitors/register', { ...link, longUrl });
+      const response = await request('/monitors/register', {
+        ...link,
+        longUrl,
+      });
       expect(response.status).toBe(400);
       const body = await response.json();
       expect(body).toEqual({
@@ -266,7 +290,9 @@ describe('monitor registration HTTP contract', () => {
     delete process.env.MONITORING_API_SECRET;
     const response = await request('/monitors/register', {});
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: 'Service is not configured' });
+    expect(await response.json()).toEqual({
+      error: 'Service is not configured',
+    });
   });
 
   test('unexpected storage failures return generic 500 without leaking internals and log/report to Sentry', async () => {
