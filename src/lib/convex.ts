@@ -1,8 +1,9 @@
 import { ConvexHttpClient } from 'convex/browser';
+import type { MonitoringEnvironment } from '../types/monitoring';
 import { enabledEnvironments } from './config';
 
-export type Environment = 'dev' | 'prod';
-const clients = new Map<Environment, ConvexHttpClient>();
+export type Environment = MonitoringEnvironment;
+const clients = new Map<MonitoringEnvironment, ConvexHttpClient>();
 
 export const CONVEX_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -22,7 +23,9 @@ export function withRequestTimeout(
 
 // Mutations share this client. Callers pass `{ skipQueue: true }` so deliveries run in parallel
 // instead of waiting behind the client's single mutation queue.
-export function getConvexClient(environment: Environment): ConvexHttpClient {
+export function getConvexClient(
+  environment: MonitoringEnvironment
+): ConvexHttpClient {
   if (!enabledEnvironments().includes(environment)) {
     throw new Error(`Checks for ${environment} are not enabled on this worker`);
   }

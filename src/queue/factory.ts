@@ -1,24 +1,30 @@
 import { Queue, Worker, Job, type ConnectionOptions } from 'bullmq';
-import IORedis from 'ioredis';
+import IORedis, { type RedisOptions } from 'ioredis';
 import * as Sentry from '@sentry/bun';
-import { connectionUrl, redisConfig } from './config';
+import { getConnectionUrl, redisConfig } from './config';
 import { logger } from '../lib/logger';
 import {
   WORKER_CONCURRENCY,
   QUEUE_RATE_LIMIT_MAX,
   QUEUE_RATE_LIMIT_DURATION,
 } from '../lib/constants';
+import { withTimeout } from '../lib/timeout';
+import type {
+  MonitoringEnvironment,
+  MonitoringJobSource,
+} from '../types/monitoring';
 
 const QUEUE_NAME = 'link-health-checks';
+const REDIS_QUIT_TIMEOUT_MS = 3_000;
 
 export interface HealthCheckJob {
-  checkId?: string;
+  checkId: string;
   linkId: string; // PostgreSQL UUID
   convexUrlId: string;
   longUrl: string;
   shortUrl: string;
-  environment: 'dev' | 'prod'; // Which Convex instance to write results to
-  source?: 'scheduled' | 'manual';
+  environment: MonitoringEnvironment; // Which Convex instance to write results to
+  source: MonitoringJobSource;
 }
 type HealthCheckQueue = Queue<HealthCheckJob, void, string>;
 type HealthCheckQueueJob = Job<HealthCheckJob, void, string>;
@@ -34,21 +40,32 @@ function asBullConnection(connection: IORedis): ConnectionOptions {
   return connection as unknown as ConnectionOptions;
 }
 
+export function createRedisConnection(
+  role: 'queue' | 'worker',
+  extraOptions: RedisOptions = {}
+): IORedis {
+  const label = role === 'queue' ? 'Queue' : 'Worker';
+  const connection = new IORedis(getConnectionUrl(), {
+    ...redisConfig,
+    ...extraOptions,
+    lazyConnect: true,
+  });
+  connection.on('error', err => {
+    logger.error({ err }, `${label} Redis connection error`);
+    Sentry.captureException(err, {
+      tags: { component: 'redis', connection: role },
+    });
+  });
+  connection.on('connect', () => {
+    logger.info(`${label} Redis connection established`);
+  });
+  return connection;
+}
+
 function getQueueConnection(): IORedis {
   if (!sharedQueueConnection) {
-    sharedQueueConnection = new IORedis(connectionUrl, {
-      ...redisConfig,
+    sharedQueueConnection = createRedisConnection('queue', {
       maxRetriesPerRequest: 1,
-      lazyConnect: true,
-    });
-    sharedQueueConnection.on('error', err => {
-      logger.error({ err }, 'Queue Redis connection error');
-      Sentry.captureException(err, {
-        tags: { component: 'redis', connection: 'queue' },
-      });
-    });
-    sharedQueueConnection.on('connect', () => {
-      logger.info('Queue Redis connection established');
     });
   }
   return sharedQueueConnection;
@@ -56,19 +73,7 @@ function getQueueConnection(): IORedis {
 
 function getWorkerConnection(): IORedis {
   if (!sharedWorkerConnection) {
-    sharedWorkerConnection = new IORedis(connectionUrl, {
-      ...redisConfig,
-      lazyConnect: true,
-    });
-    sharedWorkerConnection.on('error', err => {
-      logger.error({ err }, 'Worker Redis connection error');
-      Sentry.captureException(err, {
-        tags: { component: 'redis', connection: 'worker' },
-      });
-    });
-    sharedWorkerConnection.on('connect', () => {
-      logger.info('Worker Redis connection established');
-    });
+    sharedWorkerConnection = createRedisConnection('worker');
   }
   return sharedWorkerConnection;
 }
@@ -80,9 +85,8 @@ export const getQueue = (): HealthCheckQueue => {
       connection: asBullConnection(getQueueConnection()),
       defaultJobOptions: {
         attempts: 1, // PostgreSQL schedules durable delivery retries.
-        backoff: { type: 'exponential', delay: 1000 },
-        removeOnComplete: { count: 1000 }, // Keep last 1000 for debugging
-        removeOnFail: { count: 5000 }, // Keep last 5000 failures
+        removeOnComplete: true,
+        removeOnFail: true,
       },
     });
   }
@@ -92,14 +96,18 @@ export const getQueue = (): HealthCheckQueue => {
 export const createWorker = (
   processor: (job: HealthCheckQueueJob) => Promise<void>
 ) => {
-  const worker = new Worker<HealthCheckJob, void, string>(QUEUE_NAME, processor, {
-    connection: asBullConnection(getWorkerConnection()),
-    concurrency: WORKER_CONCURRENCY,
-    limiter: {
-      max: QUEUE_RATE_LIMIT_MAX,
-      duration: QUEUE_RATE_LIMIT_DURATION,
-    },
-  });
+  const worker = new Worker<HealthCheckJob, void, string>(
+    QUEUE_NAME,
+    processor,
+    {
+      connection: asBullConnection(getWorkerConnection()),
+      concurrency: WORKER_CONCURRENCY,
+      limiter: {
+        max: QUEUE_RATE_LIMIT_MAX,
+        duration: QUEUE_RATE_LIMIT_DURATION,
+      },
+    }
+  );
 
   // Attach event handlers
   worker.on('completed', job => {
@@ -120,6 +128,19 @@ export const createWorker = (
   return worker;
 };
 
+async function closeRedisConnection(connection: IORedis): Promise<void> {
+  if (connection.status === 'end') return;
+  try {
+    await withTimeout(
+      connection.quit(),
+      REDIS_QUIT_TIMEOUT_MS,
+      'Redis quit timed out'
+    );
+  } catch {
+    connection.disconnect();
+  }
+}
+
 // Graceful shutdown helper - call this during app shutdown
 export async function closeAllConnections(): Promise<void> {
   logger.info('Closing all Redis connections...');
@@ -130,13 +151,15 @@ export async function closeAllConnections(): Promise<void> {
   }
 
   if (sharedQueueConnection) {
-    sharedQueueConnection.disconnect();
+    const conn = sharedQueueConnection;
     sharedQueueConnection = null;
+    await closeRedisConnection(conn);
   }
 
   if (sharedWorkerConnection) {
-    sharedWorkerConnection.disconnect();
+    const conn = sharedWorkerConnection;
     sharedWorkerConnection = null;
+    await closeRedisConnection(conn);
   }
 
   logger.info('All Redis connections closed');

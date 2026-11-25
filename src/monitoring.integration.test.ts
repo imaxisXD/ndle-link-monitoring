@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { MAX_DELIVERY_ATTEMPTS } from './lib/monitor-policy';
 
 const address = process.env.MONITOR_TEST_DATABASE_URL;
@@ -21,8 +21,6 @@ let measurements = 0;
 let deliveries: unknown[] = [];
 let rejectDelivery = false;
 const result = { statusCode: 200, latencyMs: 10, isHealthy: true, healthStatus: 'up' as const };
-mock.module('./lib/checker', () => ({ checkUrl: async () => { measurements++; return result; } }));
-mock.module('./lib/convex', () => ({ getConvexClient: () => ({ mutation: async (_reference: unknown, value: unknown) => { deliveries.push(value); if (rejectDelivery) throw new Error('Simulated delivery outage'); return { success: true }; } }) }));
 
 describe('durable monitoring with isolated PostgreSQL and Redis', async () => {
   const { db } = await import('./db');
@@ -30,8 +28,22 @@ describe('durable monitoring with isolated PostgreSQL and Redis', async () => {
   const { eq } = await import('drizzle-orm');
   const { registerMonitor, unregisterMonitor } = await import('./lib/monitor-store');
   const { claimDueChecks, dispatchChecks } = await import('./scheduler');
-  const { processJob } = await import('./worker');
+  const { createJobProcessor } = await import('./worker');
   const { getQueue, closeAllConnections } = await import('./queue/factory');
+  const processJob = createJobProcessor({
+    checkUrl: async () => {
+      measurements++;
+      return result;
+    },
+    getConvexClient: () =>
+      ({
+        mutation: async (_reference: unknown, value: unknown) => {
+          deliveries.push(value);
+          if (rejectDelivery) throw new Error('Simulated delivery outage');
+          return { success: true };
+        },
+      }) as never,
+  });
   const input = { convexUrlId: 'url-test', convexUserId: 'user-test', longUrl: 'https://example.test', shortUrl: 'short', environment: 'prod' as const, monitoringVersion: 1 };
 
   beforeEach(async () => {
@@ -76,7 +88,7 @@ describe('durable monitoring with isolated PostgreSQL and Redis', async () => {
     const link = await registerMonitor(input);
     await claimDueChecks();
     const check = (await db.select().from(monitorChecks))[0];
-    const job = { id: check.id, data: { ...input, linkId: link!.id, checkId: check.id } };
+    const job = { id: check.id, data: { ...input, linkId: link!.id, checkId: check.id, source: 'scheduled' as const } };
     rejectDelivery = true;
     await expect(processJob(job)).rejects.toThrow('Simulated delivery outage');
     expect((await db.query.monitorChecks.findFirst())?.result).toEqual(result);
@@ -94,7 +106,7 @@ describe('durable monitoring with isolated PostgreSQL and Redis', async () => {
     await claimDueChecks();
     const check = (await db.select().from(monitorChecks))[0];
     await db.update(monitorChecks).set({ deliveryAttempts: MAX_DELIVERY_ATTEMPTS - 1 }).where(eq(monitorChecks.id, check.id));
-    const job = { id: check.id, data: { ...input, linkId: link!.id, checkId: check.id } };
+    const job = { id: check.id, data: { ...input, linkId: link!.id, checkId: check.id, source: 'scheduled' as const } };
     rejectDelivery = true;
     await expect(processJob(job)).rejects.toThrow('Simulated delivery outage');
     const failed = await db.query.monitorChecks.findFirst({ where: eq(monitorChecks.id, check.id) });
@@ -117,7 +129,7 @@ describe('durable monitoring with isolated PostgreSQL and Redis', async () => {
       { id: 'newer-check', linkId: link!.id, monitoringVersion: 1, source: 'scheduled', scheduledAt: at(60_000), result, measuredAt: at(30_000), finishedAt: at(20_000) },
     ]);
     rejectDelivery = true;
-    await expect(processJob({ id: 'older-check', data: { ...input, linkId: link!.id, checkId: 'older-check' } })).rejects.toThrow('Simulated delivery outage');
+    await expect(processJob({ id: 'older-check', data: { ...input, linkId: link!.id, checkId: 'older-check', source: 'scheduled' as const } })).rejects.toThrow('Simulated delivery outage');
     const older = await db.query.monitorChecks.findFirst({ where: eq(monitorChecks.id, 'older-check') });
     expect(older?.deliveryAttempts).toBe(1);
     expect(older?.failedAt).toBeInstanceOf(Date);
@@ -160,7 +172,7 @@ describe('durable monitoring with isolated PostgreSQL and Redis', async () => {
     await claimDueChecks();
     const check = (await db.select().from(monitorChecks))[0];
     await unregisterMonitor(input.convexUrlId, 'prod', 2);
-    await processJob({ id: check.id, data: { ...input, linkId: link!.id, checkId: check.id } });
+    await processJob({ id: check.id, data: { ...input, linkId: link!.id, checkId: check.id, source: 'scheduled' as const } });
     expect(measurements).toBe(0); expect(deliveries).toHaveLength(0);
     expect((await db.query.monitorChecks.findFirst({ where: eq(monitorChecks.id, check.id) }))?.finishedAt).not.toBeNull();
   });

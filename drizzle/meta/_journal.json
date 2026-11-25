@@ -43,6 +43,13 @@
       "when": 1790429497717,
       "tag": "0005_delivery_retry_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795505000000,
+      "tag": "0006_monitoring_optimizations",
+      "breakpoints": true
     }
   ]
 }

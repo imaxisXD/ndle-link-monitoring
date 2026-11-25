@@ -14,6 +14,9 @@ const db = drizzle({
 
 console.log('Running migrations...');
 
-await migrate(db, { migrationsFolder: './drizzle' });
-
-console.log('Migrations complete!');
+try {
+  await migrate(db, { migrationsFolder: './drizzle' });
+  console.log('Migrations complete!');
+} finally {
+  await db.$client.close({ timeout: 5 });
+}

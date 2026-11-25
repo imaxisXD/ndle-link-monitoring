@@ -1,12 +1,13 @@
 import { makeFunctionReference } from 'convex/server';
 import type { RecordHealthCheckResult } from '../lib/monitor-policy';
+import type { HealthStatus } from './monitoring';
 
 export const recordHealthCheck = makeFunctionReference<
   'mutation',
   {
     checkedAt: number;
     errorMessage?: string;
-    healthStatus: 'up' | 'down' | 'degraded' | 'unknown';
+    healthStatus: HealthStatus;
     checkId: string;
     monitoringVersion: number;
     isHealthy: boolean;

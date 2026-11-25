@@ -11,14 +11,6 @@ export const logger = pino({
   timestamp: pino.stdTimeFunctions.isoTime,
 });
 
-// Child logger factory for request context
-export const createRequestLogger = (
-  requestId: string,
-  extra?: Record<string, unknown>
-) => {
-  return logger.child({ requestId, ...extra });
-};
-
 // Child logger factory for worker context
 export const createWorkerLogger = (jobId: string, linkId: string) => {
   return logger.child({ component: 'worker', jobId, linkId });

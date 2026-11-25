@@ -8,3 +8,6 @@ build
 *.zip
 *.tar.gz
 *.tgz
+*.test.ts
+**/*.test.ts
+drizzle.config.ts

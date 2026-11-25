@@ -1,5 +1,9 @@
-export type MonitoringEnvironment = 'dev' | 'prod';
-export type MonitoringJobSource = 'scheduled' | 'manual';
+import type {
+  MonitoringEnvironment,
+  MonitoringJobSource,
+} from '../types/monitoring';
+
+export type { MonitoringEnvironment, MonitoringJobSource };
 
 export const PRODUCTION_MONITORING_INTERVAL_MS = 30 * 60 * 1000;
 
@@ -46,6 +50,7 @@ export function shouldDisableMissingMonitor(
 // 24-hour limit decides: a Convex outage of a few hours drops no results.
 export const MAX_DELIVERY_ATTEMPTS = 300;
 export const MAX_DELIVERY_AGE_MS = 24 * 60 * 60 * 1000;
+export const MAX_DELIVERY_BACKOFF_MS = 300_000;
 
 export type DeliveryRetryDecision =
   | 'retry'
@@ -67,4 +72,16 @@ export function getDeliveryRetryDecision(
     return 'age_limit';
   }
   return 'retry';
+}
+
+// Equal jitter in [50%, 100%] of the capped exponential backoff spreads retries after an outage.
+export function computeDeliveryRetryDelayMs(
+  attempts: number,
+  random: () => number = Math.random
+): number {
+  const baseDelay = Math.min(
+    MAX_DELIVERY_BACKOFF_MS,
+    1000 * 2 ** Math.min(Math.max(attempts, 1), 9)
+  );
+  return Math.max(1000, Math.round(baseDelay * (0.5 + random() * 0.5)));
 }

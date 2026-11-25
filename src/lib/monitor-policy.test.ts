@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  computeDeliveryRetryDelayMs,
   getDeliveryRetryDecision,
   getEffectiveMonitoringIntervalMs,
   MAX_DELIVERY_AGE_MS,
   MAX_DELIVERY_ATTEMPTS,
+  MAX_DELIVERY_BACKOFF_MS,
   PRODUCTION_MONITORING_INTERVAL_MS,
   shouldDisableMissingMonitor,
   shouldRunContinuousMonitoring,
@@ -94,5 +96,18 @@ describe('monitor policy', () => {
         true
       )
     ).toBe('superseded');
+  });
+
+  test('delivery retry backoff applies equal jitter within [50%, 100%] and respects the 5-minute ceiling', () => {
+    expect(computeDeliveryRetryDelayMs(1, () => 0)).toBe(1_000);
+    expect(computeDeliveryRetryDelayMs(1, () => 1)).toBe(2_000);
+    expect(computeDeliveryRetryDelayMs(5, () => 0)).toBe(16_000);
+    expect(computeDeliveryRetryDelayMs(5, () => 1)).toBe(32_000);
+    expect(computeDeliveryRetryDelayMs(20, () => 0)).toBe(
+      MAX_DELIVERY_BACKOFF_MS / 2
+    );
+    expect(computeDeliveryRetryDelayMs(20, () => 1)).toBe(
+      MAX_DELIVERY_BACKOFF_MS
+    );
   });
 });

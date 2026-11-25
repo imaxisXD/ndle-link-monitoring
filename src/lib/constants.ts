@@ -1,26 +1,43 @@
+export function parsePositiveIntEnv(
+  name: string,
+  fallback: number,
+  max = Number.MAX_SAFE_INTEGER
+): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > max) {
+    throw new Error(
+      max < Number.MAX_SAFE_INTEGER
+        ? `${name} must be an integer between 1 and ${max}`
+        : `${name} must be a positive integer`
+    );
+  }
+  return parsed;
+}
+
 // Scheduler configuration
-export const SCHEDULER_INTERVAL_MS = parseInt(
-  process.env.SCHEDULER_INTERVAL_MS || '10000'
+export const SCHEDULER_INTERVAL_MS = parsePositiveIntEnv(
+  'SCHEDULER_INTERVAL_MS',
+  10_000
 );
-export const SCHEDULER_BATCH_SIZE = parseInt(
-  process.env.SCHEDULER_BATCH_SIZE || '500'
+export const SCHEDULER_BATCH_SIZE = parsePositiveIntEnv(
+  'SCHEDULER_BATCH_SIZE',
+  500
 );
-export const LOCK_DURATION_MS = 30000; // 30 seconds lock to prevent double-scheduling
 
 // Worker configuration
-export const WORKER_CONCURRENCY = parseInt(
-  process.env.WORKER_CONCURRENCY || '10'
-);
+export const WORKER_CONCURRENCY = parsePositiveIntEnv('WORKER_CONCURRENCY', 10);
 export const QUEUE_RATE_LIMIT_MAX = 100;
 export const QUEUE_RATE_LIMIT_DURATION = 1000;
 
 // Health check configuration
-export const CHECK_TIMEOUT_MS = parseInt(
-  process.env.CHECK_TIMEOUT_MS || '10000'
+export const CHECK_TIMEOUT_MS = parsePositiveIntEnv('CHECK_TIMEOUT_MS', 10_000);
+export const DEGRADED_THRESHOLD_MS = parsePositiveIntEnv(
+  'DEGRADED_THRESHOLD_MS',
+  3_000
 );
-export const DEGRADED_THRESHOLD_MS = parseInt(
-  process.env.DEGRADED_THRESHOLD_MS || '3000'
-);
-
-// Default monitoring interval for new links
-export const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes

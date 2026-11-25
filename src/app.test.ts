@@ -1,43 +1,120 @@
-import { afterAll, afterEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import * as crypto from 'node:crypto';
 import * as dns from 'node:dns/promises';
+import { createApp, hasValidBearerToken } from './app';
+import { serviceState } from './lib/service-state';
 
-// The integration suite loads the database module against its isolated services, so this suite stays out of its way.
-if (!process.env.MONITOR_TEST_DATABASE_URL && !process.env.MONITOR_TEST_REDIS_URL) {
-const saved = { DATABASE_URL: process.env.DATABASE_URL, REDIS_URL: process.env.REDIS_URL, MONITORING_API_SECRET: process.env.MONITORING_API_SECRET };
-// Closed local ports: nothing in this suite can reach a real database or Redis.
-Object.assign(process.env, { DATABASE_URL: 'postgres://127.0.0.1:1/offline_test', REDIS_URL: 'redis://127.0.0.1:1/15', MONITORING_API_SECRET: 'offline-test' });
+const savedSecret = process.env.MONITORING_API_SECRET;
+const savedServiceState = { ...serviceState };
 
-describe('monitor registration HTTP contract', async () => {
-  const monitorStore = await import('./lib/monitor-store');
-  const { createApp, hasValidBearerToken } = await import('./app');
-  const register = spyOn(monitorStore, 'registerMonitor').mockImplementation(async input => ({ id: `link-${input.convexUrlId}`, monitoringVersion: input.monitoringVersion ?? 0, isDeleted: false }));
+describe('monitor registration HTTP contract', () => {
+  process.env.MONITORING_API_SECRET = 'offline-test';
+
+  const register = mock(
+    async (input: { convexUrlId: string; longUrl: string; monitoringVersion?: number }) => ({
+      id: `link-${input.convexUrlId}`,
+      monitoringVersion: input.monitoringVersion ?? 0,
+      isDeleted: false,
+    })
+  );
+  const unregister = mock(async (_convexUrlId: string, _env: 'dev' | 'prod', version = 0) => ({
+    id: 'link-deleted',
+    monitoringVersion: version,
+    isDeleted: true,
+  }));
+  const checkDependencies = mock(async () => {});
+  const errorLog = mock(() => {});
+  const captureException = mock(() => {});
+  let now = 1_000_000;
+
   const lookup = spyOn(dns, 'lookup');
-  afterEach(() => { register.mockClear(); lookup.mockClear(); });
-  afterAll(() => {
-    register.mockRestore(); lookup.mockRestore();
-    for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+
+  afterEach(() => {
+    register.mockClear();
+    unregister.mockClear();
+    checkDependencies.mockClear();
+    errorLog.mockClear();
+    captureException.mockClear();
+    lookup.mockClear();
+    process.env.MONITORING_API_SECRET = 'offline-test';
+    Object.assign(serviceState, savedServiceState);
   });
 
-  const app = createApp(false, false);
-  const request = (path: string, body: unknown) => app.handle(new Request(`http://localhost${path}`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer offline-test' }, body: JSON.stringify(body),
-  }));
-  const send = (path: string, init: RequestInit) => app.handle(new Request(`http://localhost${path}`, init));
-  const link = { convexUrlId: 'url-1', convexUserId: 'user-1', shortUrl: 'short', monitoringVersion: 3 };
+  afterAll(() => {
+    lookup.mockRestore();
+    if (savedSecret === undefined) delete process.env.MONITORING_API_SECRET;
+    else process.env.MONITORING_API_SECRET = savedSecret;
+    Object.assign(serviceState, savedServiceState);
+  });
+
+  const makeApp = () =>
+    createApp(false, false, {
+      registerMonitor: register as never,
+      unregisterMonitor: unregister as never,
+      checkDependencies,
+      logger: { error: errorLog } as never,
+      captureException,
+      now: () => now,
+    });
+
+  const app = makeApp();
+  const request = (path: string, body: unknown, target = app) =>
+    target.handle(
+      new Request(`http://localhost${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer offline-test',
+        },
+        body: JSON.stringify(body),
+      })
+    );
+  const send = (path: string, init: RequestInit, target = app) =>
+    target.handle(new Request(`http://localhost${path}`, init));
+
+  const link = {
+    convexUrlId: 'url-1',
+    convexUserId: 'user-1',
+    shortUrl: 'short',
+    monitoringVersion: 3,
+  };
   const rejectedUrls = [
-    'not a url', 'ftp://example.com/file', 'https://user:secret@example.com/', 'http://localhost:3000/', 'http://api.localhost/',
-    'http://10.0.0.5/', 'http://169.254.169.254/latest/meta-data', 'http://[::1]/', 'http://[fd00::1]/', 'http://[::ffff:127.0.0.1]/',
-    'https://example.com:8000/', 'http://example.com:5432/',
+    'not a url',
+    'ftp://example.com/file',
+    'https://user:secret@example.com/',
+    'http://localhost:3000/',
+    'http://api.localhost/',
+    'http://redis/',
+    'http://postgres:8080/',
+    'http://10.0.0.5/',
+    'http://169.254.169.254/latest/meta-data',
+    'http://[::1]/',
+    'http://[::127.0.0.1]/',
+    'http://[::ffff:0:127.0.0.1]/',
+    'http://[fd00::1]/',
+    'http://[::ffff:127.0.0.1]/',
+    'https://example.com:8000/',
+    'http://example.com:5432/',
   ];
 
   test('public and unresolvable hostnames register without a DNS lookup', async () => {
-    for (const longUrl of ['https://Example.com/landing', 'https://expired-domain.invalid/offer']) {
+    for (const longUrl of [
+      'https://Example.com/landing',
+      'https://expired-domain.invalid/offer',
+    ]) {
       const response = await request('/monitors/register', { ...link, longUrl });
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ success: true, linkId: 'link-url-1', monitoringVersion: 3, isDeleted: false });
+      expect(await response.json()).toEqual({
+        success: true,
+        linkId: 'link-url-1',
+        monitoringVersion: 3,
+        isDeleted: false,
+      });
     }
-    expect(register.mock.calls.map(([input]) => input.longUrl)).toEqual(['https://example.com/landing', 'https://expired-domain.invalid/offer']);
+    expect(register.mock.calls.map(([input]) => (input as { longUrl: string }).longUrl)).toEqual([
+      'https://example.com/landing',
+      'https://expired-domain.invalid/offer',
+    ]);
     expect(lookup).not.toHaveBeenCalled();
   });
 
@@ -46,7 +123,11 @@ describe('monitor registration HTTP contract', async () => {
       const response = await request('/monitors/register', { ...link, longUrl });
       expect(response.status).toBe(400);
       const body = await response.json();
-      expect(body).toEqual({ success: false, code: 'invalid_url', error: expect.any(String) });
+      expect(body).toEqual({
+        success: false,
+        code: 'invalid_url',
+        error: expect.any(String),
+      });
       // Short fixed messages: no addresses or credentials are echoed back.
       expect(body.error).not.toMatch(/\d+\.\d+\.\d+\.\d+|::|secret/);
     }
@@ -54,41 +135,77 @@ describe('monitor registration HTTP contract', async () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  test('a batch registers valid links and reports invalid ones per link', async () => {
-    const response = await request('/monitors/batch', { links: [
-      { ...link, longUrl: 'https://example.com/' },
-      { ...link, convexUrlId: 'url-2', longUrl: 'http://10.0.0.5/' },
-      { ...link, convexUrlId: 'url-3', longUrl: 'https://expired-domain.invalid/' },
-      { ...link, convexUrlId: 'url-4', longUrl: 'ftp://example.com/' },
-    ] });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      success: true, inserted: 2, rejected: 2,
-      results: [
-        { convexUrlId: 'url-1', success: true },
-        { convexUrlId: 'url-2', success: false, code: 'invalid_url', error: 'URL points to a private network address' },
-        { convexUrlId: 'url-3', success: true },
-        { convexUrlId: 'url-4', success: false, code: 'invalid_url', error: 'Only HTTP and HTTPS URLs can be monitored' },
-      ],
+  test('unregister requires a non-empty convexUrlId and returns the saved receipt', async () => {
+    const empty = await request('/monitors/unregister', { convexUrlId: '' });
+    expect(empty.status).toBe(422);
+    expect(unregister).not.toHaveBeenCalled();
+
+    const ok = await request('/monitors/unregister', {
+      convexUrlId: 'url-1',
+      environment: 'prod',
+      monitoringVersion: 4,
     });
-    expect(register.mock.calls.map(([input]) => [input.convexUrlId, input.environment])).toEqual([['url-1', 'prod'], ['url-3', 'prod']]);
-    expect(lookup).not.toHaveBeenCalled();
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({
+      success: true,
+      disabledCount: 1,
+      monitoringVersion: 4,
+      isDeleted: true,
+    });
+  });
+
+  test('removed zero-caller /monitors/* endpoints are no longer exposed', async () => {
+    const authHeaders = {
+      'content-type': 'application/json',
+      authorization: 'Bearer offline-test',
+    };
+    const id = '11111111-1111-4111-8111-111111111111';
+    for (const [path, method] of [
+      ['/monitors/batch', 'POST'],
+      [`/monitors/${id}/force-check`, 'POST'],
+      [`/monitors/${id}`, 'GET'],
+      [`/monitors/${id}`, 'DELETE'],
+    ] as const) {
+      const response = await send(path, {
+        method,
+        headers: authHeaders,
+        ...(method === 'POST' ? { body: '{}' } : {}),
+      });
+      expect(response.status).toBe(404);
+    }
   });
 
   test('requests without the secret get 401 before the body or parameters are parsed or validated', async () => {
     const unauthenticated: Array<[string, RequestInit]> = [
       ['/monitors/register', { method: 'POST', body: '{}' }],
       ['/monitors/register', { method: 'POST', body: '{"longUrl": 42' }],
-      ['/monitors/register', { method: 'POST', body: JSON.stringify({ ...link, longUrl: 'https://example.com/' }) }],
-      ['/monitors/batch', { method: 'POST', body: JSON.stringify({ links: 'not a list' }) }],
+      [
+        '/monitors/register',
+        {
+          method: 'POST',
+          body: JSON.stringify({ ...link, longUrl: 'https://example.com/' }),
+        },
+      ],
       ['/monitors/unregister', { method: 'POST', body: '[]' }],
-      ['/monitors/not-a-uuid', { method: 'GET' }],
-      ['/monitors/not-a-uuid/force-check', { method: 'POST' }],
-      ['/monitors/not-a-uuid', { method: 'DELETE' }],
     ];
-    for (const authorization of [undefined, '', 'Bearer wrong', 'Bearer offline-tes', 'Bearer offline-test-extra', 'offline-test', 'bearer offline-test', 'Basic b2ZmbGluZS10ZXN0']) {
+    for (const authorization of [
+      undefined,
+      '',
+      'Bearer wrong',
+      'Bearer offline-tes',
+      'Bearer offline-test-extra',
+      'offline-test',
+      'bearer offline-test',
+      'Basic b2ZmbGluZS10ZXN0',
+    ]) {
       for (const [path, init] of unauthenticated) {
-        const response = await send(path, { ...init, headers: { 'content-type': 'application/json', ...(authorization === undefined ? {} : { authorization }) } });
+        const response = await send(path, {
+          ...init,
+          headers: {
+            'content-type': 'application/json',
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+        });
         expect(response.status).toBe(401);
         expect(await response.json()).toEqual({ error: 'Access denied' });
       }
@@ -98,7 +215,9 @@ describe('monitor registration HTTP contract', async () => {
   });
 
   test('authenticated requests are still validated', async () => {
-    const response = await request('/monitors/register', { longUrl: 'https://example.com/' });
+    const response = await request('/monitors/register', {
+      longUrl: 'https://example.com/',
+    });
     expect(response.status).toBe(422);
     expect(register).not.toHaveBeenCalled();
   });
@@ -106,8 +225,16 @@ describe('monitor registration HTTP contract', async () => {
   test('the bearer secret is compared in constant time', async () => {
     const compare = spyOn(crypto, 'timingSafeEqual');
     try {
-      expect(hasValidBearerToken('Bearer offline-test', 'offline-test')).toBe(true);
-      for (const header of [null, '', 'Bearer x', 'Bearer offline-tesT', `Bearer ${'offline-test'.repeat(50)}`]) {
+      expect(hasValidBearerToken('Bearer offline-test', 'offline-test')).toBe(
+        true
+      );
+      for (const header of [
+        null,
+        '',
+        'Bearer x',
+        'Bearer offline-tesT',
+        `Bearer ${'offline-test'.repeat(50)}`,
+      ]) {
         expect(hasValidBearerToken(header, 'offline-test')).toBe(false);
       }
       expect(compare).toHaveBeenCalledTimes(6);
@@ -117,26 +244,92 @@ describe('monitor registration HTTP contract', async () => {
         expect(expected.byteLength).toBe(32);
       }
       compare.mockClear();
-      expect((await send('/monitors/not-a-uuid', { headers: { authorization: 'Bearer short' } })).status).toBe(401);
+      expect(
+        (
+          await send('/monitors/unregister', {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              authorization: 'Bearer short',
+            },
+            body: '{}',
+          })
+        ).status
+      ).toBe(401);
       expect(compare).toHaveBeenCalled();
-    } finally { compare.mockRestore(); }
+    } finally {
+      compare.mockRestore();
+    }
   });
 
   test('routes are unavailable when the API secret is not configured', async () => {
     delete process.env.MONITORING_API_SECRET;
-    try {
-      const response = await request('/monitors/register', {});
-      expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: 'Service is not configured' });
-    } finally { process.env.MONITORING_API_SECRET = 'offline-test'; }
+    const response = await request('/monitors/register', {});
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Service is not configured' });
   });
 
-  test('unexpected storage failures remain server errors', async () => {
-    register.mockImplementationOnce(async () => { throw new Error('Invalid URL in connection string'); });
-    expect((await request('/monitors/register', { ...link, longUrl: 'https://example.com/' })).status).toBe(500);
-    register.mockImplementationOnce(async () => { throw new Error('Database unavailable'); });
-    expect((await request('/monitors/batch', { links: [{ ...link, longUrl: 'https://example.com/' }] })).status).toBe(500);
+  test('unexpected storage failures return generic 500 without leaking internals and log/report to Sentry', async () => {
+    const dbError = new Error(
+      'DrizzleError: relation "monitored_links" failed on postgres://secret@db:5432/prod'
+    );
+    register.mockImplementationOnce(async () => {
+      throw dbError;
+    });
+    const response = await request('/monitors/register', {
+      ...link,
+      longUrl: 'https://example.com/',
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'Internal server error' });
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  test('GET /ready coalesces concurrent checks and caches dependency readiness for 2s', async () => {
+    const readyApp = makeApp();
+    serviceState.started = false;
+    serviceState.stopping = false;
+    expect((await send('/ready', { method: 'GET' }, readyApp)).status).toBe(
+      503
+    );
+    expect(checkDependencies).not.toHaveBeenCalled();
+
+    serviceState.started = true;
+    let release!: () => void;
+    checkDependencies.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          release = resolve;
+        })
+    );
+
+    const concurrent = Promise.all([
+      send('/ready', { method: 'GET' }, readyApp),
+      send('/ready', { method: 'GET' }, readyApp),
+      send('/ready', { method: 'GET' }, readyApp),
+    ]);
+    await Bun.sleep(10);
+    expect(checkDependencies).toHaveBeenCalledTimes(1);
+    release();
+    const responses = await concurrent;
+    expect(responses.map(r => r.status)).toEqual([200, 200, 200]);
+
+    // Within 2s TTL: served from cache without calling dependencies again.
+    now += 1_500;
+    expect((await send('/ready', { method: 'GET' }, readyApp)).status).toBe(
+      200
+    );
+    expect(checkDependencies).toHaveBeenCalledTimes(1);
+
+    // After 2s TTL expires: re-checks dependencies and reflects failure.
+    now += 600;
+    checkDependencies.mockImplementationOnce(async () => {
+      throw new Error('Redis PING failed');
+    });
+    expect((await send('/ready', { method: 'GET' }, readyApp)).status).toBe(
+      503
+    );
+    expect(checkDependencies).toHaveBeenCalledTimes(2);
   });
 });
-
-} else { test.skip('monitor registration HTTP contract runs only in the offline suite', () => {}); }
